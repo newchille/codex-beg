@@ -89,7 +89,10 @@ function registerIpc(): void {
 }
 
 async function createWindow(): Promise<void> {
-  mainWindow = new BrowserWindow({ width: 1280, height: 820, minWidth: 980, minHeight: 640, webPreferences: { preload: join(here, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  mainWindow = new BrowserWindow({ width: 1280, height: 820, minWidth: 980, minHeight: 640, webPreferences: { preload: join(here, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  mainWindow.webContents.on("preload-error", (_event, preloadPath, error) => {
+    console.error(`Codex BEG preload failed (${preloadPath}): ${error.message}`);
+  });
   if (process.env.ELECTRON_RENDERER_URL) await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   else await mainWindow.loadFile(join(here, "index.html"));
   mainWindow.on("closed", () => { mainWindow = null; });
