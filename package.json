@@ -1,0 +1,24 @@
+{
+  "name": "codex-beg",
+  "version": "0.1.0",
+  "private": true,
+  "productName": "Codex BEG",
+  "description": "Local-first MCP computer agent for safe development workflows.",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @codex-beg/desktop dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm --filter @codex-beg/core build && pnpm --filter @codex-beg/agent-host typecheck && pnpm --filter @codex-beg/desktop typecheck",
+    "test": "pnpm --filter @codex-beg/core build && pnpm -r test",
+    "lint": "pnpm -r lint",
+    "package": "pnpm --filter @codex-beg/desktop package",
+    "inspect:mcp": "pnpm --filter @codex-beg/agent-host inspect:mcp"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3"
+  }
+}
