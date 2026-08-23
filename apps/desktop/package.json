@@ -1,0 +1,44 @@
+{
+  "name": "@codex-beg/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Codex BEG local-first safety core desktop application",
+  "author": "Codex BEG contributors",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "pnpm --filter @codex-beg/core build && pnpm --filter @codex-beg/agent-host build && electron-vite dev",
+    "build": "pnpm build:main && pnpm build:renderer",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "pnpm typecheck",
+    "package": "pnpm --filter @codex-beg/core build && pnpm --filter @codex-beg/agent-host build && pnpm build && electron-builder --dir --publish never"
+  },
+  "dependencies": {
+    "@codex-beg/core": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.4.1",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "electron": "^36.2.1",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^4.0.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0",
+    "vitest": "^3.1.1"
+  },
+  "build": {
+    "appId": "com.codexbeg.desktop",
+    "productName": "Codex BEG",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "package.json"],
+    "extraResources": [{ "from": "../agent-host/dist/main.js", "to": "agent-host/main.js" }],
+    "win": { "target": [{ "target": "portable", "arch": ["x64"] }] },
+    "mac": { "target": ["dir"] }
+  }
+}

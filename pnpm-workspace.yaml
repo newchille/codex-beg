@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+
+overrides:
+  '@electron/get': 4.0.0
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true
