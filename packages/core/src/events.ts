@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 export const EVENT_NAMES = [
   "tool.started", "tool.completed", "tool.failed", "process.started", "process.stdout",
   "process.stderr", "process.exited", "policy.allowed", "policy.blocked", "policy.approval_required",
-  "workspace.changed", "tunnel.connected", "tunnel.disconnected",
+  "workspace.changed", "operation.interrupted", "tunnel.connected", "tunnel.disconnected",
 ] as const;
 
 export type EventName = (typeof EVENT_NAMES)[number];

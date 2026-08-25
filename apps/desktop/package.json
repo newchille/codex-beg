@@ -15,7 +15,8 @@
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "vitest run --passWithNoTests",
     "lint": "pnpm typecheck",
-    "package": "pnpm --filter @codex-beg/core build && pnpm --filter @codex-beg/agent-host build && pnpm build && electron-builder --dir --publish never"
+    "package": "pnpm --filter @codex-beg/core build && pnpm --filter @codex-beg/agent-host build && pnpm build && electron-builder --dir --publish never",
+    "package:dmg": "pnpm --filter @codex-beg/core build && pnpm --filter @codex-beg/agent-host build && pnpm build && electron-builder --mac dmg --arm64 --publish never"
   },
   "dependencies": {
     "@codex-beg/core": "workspace:*",
@@ -37,9 +38,10 @@
     "appId": "com.codexbeg.desktop",
     "productName": "Codex BEG",
     "directories": { "output": "release" },
-    "files": ["dist/**/*", "package.json"],
+    "artifactName": "Codex-BEG-${version}-mac-${arch}.${ext}",
+    "files": ["dist/**/*", "package.json", "!node_modules/**/*"],
     "extraResources": [{ "from": "../agent-host/dist/main.js", "to": "agent-host/main.js" }],
     "win": { "target": [{ "target": "portable", "arch": ["x64"] }] },
-    "mac": { "target": ["dir"] }
+    "mac": { "target": ["dir"], "identity": null }
   }
 }
