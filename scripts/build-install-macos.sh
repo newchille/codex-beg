@@ -6,9 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_DIR="${CODEX_BEG_INSTALL_DIR:-$HOME/Applications}"
 INSTALL_DEPS=0
-REPLACE=0
 LAUNCH=0
 STAGING_PARENT=""
+BUILD_OUTPUT_DIR="$REPO_ROOT/apps/desktop/release/mac-arm64"
 
 usage() {
   cat <<'EOF'
@@ -20,22 +20,19 @@ Usage:
 Options:
   --install-deps       Install missing Node.js/pnpm with Homebrew.
   --install-dir DIR   Install into DIR (default: ~/Applications).
-  --replace            Move an existing app aside before installing the new one.
+  --replace            Deprecated compatibility flag; replacement is always enabled.
   --launch             Open Codex BEG after installation.
   -h, --help           Show this help.
   --version            Show the script version.
 
-The script runs pnpm install --frozen-lockfile and pnpm package from the
-repository root, then installs the arm64 app without requiring sudo.
+The script always builds a fresh arm64 app from the current checkout, deletes
+the previous build output and installed app, then installs the new app without
+requiring sudo. No backup is kept.
 EOF
 }
 
 info() {
   printf '==> %s\n' "$*"
-}
-
-warn() {
-  printf 'Warning: %s\n' "$*" >&2
 }
 
 die() {
@@ -64,7 +61,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --replace)
-      REPLACE=1
+      # Kept for backwards compatibility; replacement is always enabled.
       shift
       ;;
     --launch)
@@ -111,7 +108,11 @@ NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
 cd "$REPO_ROOT"
 info "Installing locked dependencies"
 pnpm install --frozen-lockfile
-info "Building Codex BEG"
+if [ -e "$BUILD_OUTPUT_DIR" ]; then
+  info "Removing previous arm64 build output"
+  rm -rf -- "$BUILD_OUTPUT_DIR"
+fi
+info "Building a fresh Codex BEG app from the current checkout"
 pnpm package
 
 APP_SOURCE="$REPO_ROOT/apps/desktop/release/mac-arm64/Codex BEG.app"
@@ -119,18 +120,14 @@ APP_SOURCE="$REPO_ROOT/apps/desktop/release/mac-arm64/Codex BEG.app"
 
 mkdir -p "$INSTALL_DIR"
 APP_DEST="$INSTALL_DIR/Codex BEG.app"
-if [ -e "$APP_DEST" ] && [ "$REPLACE" -ne 1 ]; then
-  die "Destination already exists: $APP_DEST (rerun with --replace to preserve it as a timestamped backup)"
-fi
 
 STAGING_PARENT="$(mktemp -d "$INSTALL_DIR/.codex-beg-install.XXXXXX")"
 info "Copying app to $APP_DEST"
 ditto "$APP_SOURCE" "$STAGING_PARENT/Codex BEG.app"
 
 if [ -e "$APP_DEST" ]; then
-  BACKUP="$INSTALL_DIR/Codex BEG.app.backup.$(date +%Y%m%d-%H%M%S)"
-  mv "$APP_DEST" "$BACKUP"
-  warn "Existing app preserved at $BACKUP"
+  info "Removing existing app: $APP_DEST"
+  rm -rf -- "$APP_DEST"
 fi
 mv "$STAGING_PARENT/Codex BEG.app" "$APP_DEST"
 

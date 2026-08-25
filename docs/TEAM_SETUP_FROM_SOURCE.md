@@ -2,37 +2,30 @@
 
 ใช้เอกสารนี้เมื่อทีมต้อง clone repository แล้ว build/install เองบน macOS Apple Silicon
 
-## 1. Clone และติดตั้งแอป
+## 1. Clone และติดตั้งทุกอย่างบนเครื่อง clean
 
 ```bash
-git clone https://github.com/newchille/codex-beg.git
+git clone https://github.com/newchille/codex-beg.git gpt-mcp
 cd gpt-mcp
-./scripts/build-install-macos.sh --install-deps --launch
+./scripts/bootstrap-macos.sh
 ```
 
-ถ้าเครื่องมี Node.js 22+ และ pnpm อยู่แล้ว ให้ตัด `--install-deps` ออก:
+`bootstrap-macos.sh` จะทำให้ครบในครั้งเดียว:
 
-```bash
-./scripts/build-install-macos.sh --launch
-```
+- ตรวจว่าเป็น macOS Apple Silicon
+- ติดตั้ง Homebrew ถ้ายังไม่มี
+- ติดตั้ง Node.js และ pnpm
+- build/install และเปิด `Codex BEG.app`
+- ติดตั้ง official `tunnel-client`
+- ถามและบันทึก `tunnel_id` กับ Runtime API key แบบปลอดภัยครั้งแรก
 
-สคริปต์จะ:
+ทุกครั้งที่รัน `bootstrap-macos.sh` จะ build แอปใหม่จาก source ปัจจุบัน ลบ build output เดิมและลบแอปที่ติดตั้งอยู่ก่อน แล้วติดตั้งตัวใหม่ โดยไม่เก็บ backup
 
-1. ตรวจว่าเป็น macOS arm64
-2. ติดตั้ง dependency ด้วย `pnpm install --frozen-lockfile`
-3. build package ด้วย `pnpm package`
-4. ติดตั้ง `Codex BEG.app` ไปที่ `~/Applications`
-5. ไม่ใช้ `sudo` และไม่แตะ project files นอก repository
-
-ถ้ามีแอปเดิมอยู่แล้ว สคริปต์จะหยุดเพื่อไม่เขียนทับโดยไม่ตั้งใจ ใช้ `--replace` เมื่อต้องการย้ายแอปเดิมไปเป็น backup แล้วติดตั้งตัวใหม่:
-
-```bash
-./scripts/build-install-macos.sh --replace --launch
-```
+ถ้าต้องการติดตั้งทุกอย่างแต่ยังไม่เชื่อม tunnel ให้ใช้ `--skip-connect` แล้วค่อยรัน `./scripts/run-codex-beg.sh` ภายหลัง
 
 เปิดแอปแล้วไปที่ **Doctor → Run checks** ต้องเห็น Agent Host running และ endpoint เป็น `http://127.0.0.1:43123/mcp`
 
-## 2. ติดตั้ง tunnel-client
+## 2. ติดตั้ง tunnel-client แยก (กรณีไม่ได้ใช้ bootstrap)
 
 ```bash
 ./scripts/setup-tunnel-client.sh
@@ -44,45 +37,40 @@ cd gpt-mcp
 ./scripts/setup-tunnel-client.sh --with-codex-plugin
 ```
 
-plugin เป็น optional และไม่จำเป็นสำหรับ ChatGPT Connector โดยตรง
+Tunnel MCP plugin สำหรับ Codex CLI เป็น optional; การสร้าง ChatGPT MCP app ทำบนเว็บตามข้อ 4
 
-## 3. เตรียม Runtime API key
+## 3. บันทึกค่าต่อเครื่องครั้งเดียว
 
 ผู้ดูแล Platform ต้องเตรียม tunnel และ Runtime API key ให้ผู้ใช้แต่ละคน/แต่ละเครื่อง โดย key ต้องมี Tunnels **Read + Use** เท่านั้น
 
-```bash
-KEY_FILE="$HOME/.config/codex-beg/secrets/control-plane-api-key"
-install -d -m 700 "$HOME/.config/codex-beg/secrets"
-umask 077
-printf 'Runtime API key (input hidden): '
-IFS= read -r -s CONTROL_PLANE_API_KEY
-printf '\n'
-printf '%s' "$CONTROL_PLANE_API_KEY" > "$KEY_FILE"
-unset CONTROL_PLANE_API_KEY
-chmod 600 "$KEY_FILE"
-```
-
-ห้ามใส่ key ลงใน Git, command argument, chat หรือ screenshot
-
-## 4. ตั้งค่าต่อเครื่องและเชื่อม tunnel
-
-ตั้งค่า `tunnel_id` ของเครื่องนั้น และชี้ไปที่ key file:
+หลังติดตั้งครั้งแรก ให้รันคำสั่งนี้เพื่อบันทึกค่า:
 
 ```bash
-export CONTROL_PLANE_TUNNEL_ID='tunnel_0123456789abcdef0123456789abcdef'
-export CONTROL_PLANE_API_KEY_FILE="$HOME/.config/codex-beg/secrets/control-plane-api-key"
-export TUNNEL_CLIENT_ALIAS='codex-beg'
+./scripts/configure-codex-beg.sh
 ```
 
-ตรวจว่าแอปเปิดอยู่แล้วรัน:
+สคริปต์จะถาม `tunnel_id` และ Runtime API key แบบไม่แสดงบนจอ แล้วบันทึกไว้ที่:
+
+- `~/.config/codex-beg/tunnel-id`
+- `~/.config/codex-beg/secrets/control-plane-api-key` (mode `600`)
+
+ไม่ต้องใส่ API key ใน `~/.zshrc`, Git หรือ command argument
+
+ถ้าต้องการเปลี่ยน tunnel หรือหมุน API key:
 
 ```bash
-./scripts/run-tunnel-client.sh
+./scripts/configure-codex-beg.sh --force
 ```
 
-สคริปต์จะตรวจ local health, เรียก `tunnel-client runtimes connect`, แล้วตรวจ `runtimes status --json` ต่อทันที โดยไม่พิมพ์ API key ออกมา
+## 4. รันครั้งถัดไปโดยไม่ติดตั้งและไม่ถามค่า
 
-ถ้าต้องการใช้ environment variable ชั่วคราวแทนไฟล์:
+```bash
+./scripts/run-codex-beg.sh
+```
+
+สคริปต์จะเปิดแอป รอ Agent Host healthy แล้วโหลดค่าที่บันทึกไว้เพื่อเชื่อม tunnel โดยไม่ติดตั้งอะไรใหม่
+
+ถ้าต้องการใช้ environment variable หรือ key file สำหรับ automation ก็ยังใช้รูปแบบเดิมได้:
 
 ```bash
 export CONTROL_PLANE_TUNNEL_ID='tunnel_...'
@@ -94,13 +82,21 @@ export CONTROL_PLANE_API_KEY
 unset CONTROL_PLANE_API_KEY
 ```
 
-## 5. ต่อ ChatGPT Connector
+ห้ามใส่ key ลงใน Git, command argument, chat หรือ screenshot
 
-1. เปิด ChatGPT → **Settings → Connectors**
-2. เลือก **Connection: Tunnel**
-3. เลือก/ใส่ `tunnel_id` เดียวกับที่ตั้งในเครื่องนี้
-4. คง Codex BEG และ managed tunnel runtime ให้ `healthy`/`ready`
-5. ทดสอบด้วย `workspace_list` ก่อน แล้วค่อย register project
+สคริปต์จะตรวจ local health, เรียก `tunnel-client runtimes connect`, แล้วตรวจ `runtimes status --json` ต่อทันที โดยไม่พิมพ์ API key ออกมา
+
+## 5. สร้าง MCP app/plugin ใน ChatGPT
+
+1. คง Codex BEG และ managed tunnel runtime ให้ `healthy`/`ready`
+2. เปิด [ChatGPT Plugins](https://chatgpt.com/plugins) บนเว็บ
+3. กด `+` เพื่อสร้าง developer-mode app (บาง workspace อาจแสดงชื่อ **Apps → Create**)
+4. เลือก **Tunnel** ในช่อง Connection
+5. เลือก tunnel ที่แสดง หรือ paste `tunnel_id` เดียวกับเครื่องนี้
+6. กรอก metadata ของ app, กด **Scan Tools** แล้วกด **Create**
+7. เปิดแชตใหม่ แล้วเลือก draft app จากเมนู Tools เพื่อทดสอบ
+
+ถ้าไม่เห็นปุ่มสร้าง app หรือ developer mode ให้ workspace admin เปิดสิทธิ์ Developer mode / Create custom MCP connectors ก่อน
 
 ## 6. โมเดลแยกต่อคน/ต่อเครื่อง
 
@@ -121,7 +117,7 @@ Bob Mac    → tunnel_id_B + runtime_key_B + connector_B
 tunnel-client runtimes stop "${TUNNEL_CLIENT_ALIAS:-codex-beg}"
 ```
 
-หลัง reboot ให้เปิด Codex BEG ก่อน แล้วรัน `./scripts/run-tunnel-client.sh` ใหม่ถ้า status ไม่ได้เป็น running/healthy/ready
+หลัง reboot ให้รัน `./scripts/run-codex-beg.sh` ใหม่ถ้า status ไม่ได้เป็น running/healthy/ready
 
 Official references:
 

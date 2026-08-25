@@ -71,4 +71,4 @@ if [ "$INSTALL_PLUGIN" -eq 1 ]; then
 fi
 
 info "No credentials were requested or stored"
-info "Next: set CONTROL_PLANE_TUNNEL_ID and CONTROL_PLANE_API_KEY_FILE, then run scripts/run-tunnel-client.sh"
+info "Next: open Codex BEG and run scripts/run-codex-beg.sh; it will prompt for tunnel_id and the Runtime API key"
