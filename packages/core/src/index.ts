@@ -9,3 +9,4 @@ export * from "./project-adapters.js";
 export * from "./workspace.js";
 export * from "./git.js";
 export * from "./runtime.js";
+export * from "./executable-resolution.js";
