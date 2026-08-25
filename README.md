@@ -4,6 +4,33 @@ Codex BEG is a local-first Electron + MCP development agent. A ChatGPT planner (
 
 Current roadmap and agent handoff state: [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md). Agents should read that file before starting a new phase.
 
+## Install the public macOS release
+
+On Apple Silicon, install the external tunnel prerequisite and the signed-by-checksum Homebrew Cask:
+
+```bash
+brew install openai/tools/tunnel-client
+brew install --cask newchille/tap/codex-beg
+open -a "Codex BEG"
+```
+
+Then open **Connection**, enter the Tunnel ID and Runtime API key, choose **Save & verify**, and choose **Start Tunnel**. The app does not bundle `tunnel-client`.
+
+Release `v0.1.0` is an unsigned/adhoc development distribution. On first launch, macOS may require the normal Control-click → **Open** confirmation (or **Open Anyway** in Privacy & Security). Do not disable Gatekeeper globally.
+
+For later releases:
+
+```bash
+brew update
+brew upgrade --cask newchille/tap/codex-beg
+```
+
+To uninstall the app:
+
+```bash
+brew uninstall --cask newchille/tap/codex-beg
+```
+
 ## Development
 
 ```bash

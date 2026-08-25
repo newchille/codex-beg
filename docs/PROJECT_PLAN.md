@@ -378,7 +378,7 @@ Verify:
 Do read-only smoke checks on unrelated projects unless the user explicitly asks to mutate them.
 
 ### NEXT-6 — macOS distribution checkpoint
-Status: **PACKAGE AND NON-SECRET SMOKE READY / PUBLIC RELEASE PENDING**
+Status: **PUBLIC RELEASE + HOMEBREW INSTALL VERIFIED**
 
 Verified 2026-08-25:
 
@@ -397,6 +397,11 @@ Verified 2026-08-25:
 - The tunnel wrapper accepts a tunnel ID plus a user-only Runtime API key file or exported environment variable, and now prompts for omitted values when run interactively; it checks the local Agent Host first and uses the managed `tunnel-client runtimes connect` flow without exposing the key as a command-line value.
 - The current app is an adhoc/unsigned development distribution, not Developer ID signed or notarized; the friend guide documents the normal macOS Open Anyway flow.
 - The tunnel-client/ChatGPT connector remains an external live prerequisite; the friend guide follows the current official `tunnel-client` runtime and connector flows.
+- 2026-08-26 public release: tag `v0.1.0` was pushed at commit `b33a16f`; GitHub Actions run `32886398173` passed and published the DMG plus `SHA256SUMS.txt` at [the GitHub Release](https://github.com/newchille/codex-beg/releases/tag/v0.1.0).
+- Published GitHub Release DMG SHA-256 is `921e0d5aac77b09cb1630d8244e6195f0df1c9951db46aef5cb9a8698c124afc`; this is the immutable hash used by the live cask (the earlier local packaging hash remains only a local artifact checkpoint).
+- Public tap `newchille/homebrew-tap` now contains `Casks/codex-beg.rb` with the arm64 dependency, macOS `:big_sur` minimum, versioned release URL, and exact published hash.
+- Live Homebrew smoke passed install, uninstall, reinstall, and installed-app launch. The exact Homebrew app executable `/Applications/Codex BEG.app/Contents/MacOS/Codex BEG` returned `/healthz` version `0.1.0`, 35 tools, and catalog hash `67325d2e949dde8a`.
+- `brew audit --new --cask newchille/tap/codex-beg` has no cask syntax errors; the remaining findings are expected for this first unsigned, not-yet-notable public project (adhoc signature verification and Homebrew popularity thresholds). Upgrade smoke is deferred until a later version exists.
 
 ## 8. Near-term roadmap after the current security checkpoint
 
