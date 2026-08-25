@@ -4,7 +4,7 @@
 >
 > Read this file before starting a new phase. Update it when a phase changes state, a security invariant changes, or a major architectural decision is accepted. Historical handoff documents are useful context, but this file wins when they conflict with the current implementation.
 
-Last synced: 2026-08-25
+Last synced: 2026-08-26
 Repository: `/Users/11397288/DevProjects/gpt-mcp`
 Branch: `main`
 
@@ -378,14 +378,21 @@ Verify:
 Do read-only smoke checks on unrelated projects unless the user explicitly asks to mutate them.
 
 ### NEXT-6 — macOS distribution checkpoint
-Status: **DONE FOR CURRENT SOURCE / LIVE CONNECTOR STILL EXTERNAL**
+Status: **PACKAGE AND NON-SECRET SMOKE READY / PUBLIC RELEASE PENDING**
 
 Verified 2026-08-25:
 
 - electron-vite dev builds use absolute main/preload/renderer inputs and non-cleaning shared outputs; `pnpm dev` launches the Desktop app and Agent Host health endpoint.
 - The current arm64 package is at `apps/desktop/release/mac-arm64/Codex BEG.app`; packaged and extracted-ZIP smoke both returned Agent Host version `0.1.0`, 35 tools, and catalog hash `67325d2e949dde8a`.
 - `pnpm package:dmg` now produces the installable `apps/desktop/release/Codex-BEG-0.1.0-mac-arm64.dmg`; the DMG was mounted read-only and verified to contain the arm64 app.
-- Share artifacts are in `dist-share/`: the macOS arm64 DMG, ZIP fallback, `SETUP_TEAM.md`, `SETUP_FRIEND.md`, and `SHA256SUMS.txt`.
+- 2026-08-26 package checkpoint: `apps/desktop/release/Codex-BEG-0.1.0-mac-arm64.dmg` SHA-256 is `617c38dc6344e7c63e1bc9ccd42392f503878c35370eece0cd183b3fccadde2d`; `dist-share/SHA256SUMS.txt` was regenerated from this file.
+- 2026-08-26 packaged Agent Host SHA-256 is `4a20eb09ef3fadb5b6ffe6ee789574a8b6af12bd03694aaa2d63351e6c54465d`, matching `apps/agent-host/dist/main.js`.
+- 2026-08-26 icon checkpoint: SVG was rasterized into the supported `apps/desktop/renderer/src/app-icon.icns`; the packaged bundle contains `Contents/Resources/icon.icns` and does not use the default Electron icon.
+- 2026-08-26 packaged smoke: `/healthz` returned version `0.1.0`, 35 tools, catalog hash `67325d2e949dde8a`; close/reopen kept Agent Host alive; graceful Quit closed port `43123`; DMG read-only mount contained the app and icon.
+- Desktop source now refreshes Projects immediately after a successful folder registration and also polls bounded workspace state so external registration changes appear without a manual reload.
+- Desktop source now acts as the tunnel control surface: it shows live Agent/MCP/tunnel state, saves Tunnel ID plus an OS-encrypted Runtime API key through Electron `safeStorage`, verifies the exact tunnel with a read-only runtime-key lookup, and starts/stops the supported managed `tunnel-client runtimes` flow without putting the literal key on the command line.
+- The previously built DMG with SHA-256 `c929e982edda6b826d7b16dc35e9b10cb8a2912be18cb2b0836563dc3bd331e6` is superseded by the 2026-08-26 package above.
+- Window close now hides Codex BEG to a macOS menu-bar tray instead of exiting; the tray exposes Open, live tunnel state, Start/Stop Tunnel, and Quit. Full Quit gracefully stops the managed tunnel and Agent Host.
 - GitHub checkout onboarding is now scripted for macOS arm64: `scripts/bootstrap-macos.sh` is the clean-machine install/update entry point that rebuilds from the current checkout and replaces the installed app without backups, `scripts/configure-codex-beg.sh` persists per-device credentials with mode-600 key storage, and `scripts/run-codex-beg.sh` is the install-free daily launcher; source setup is documented in `docs/TEAM_SETUP_FROM_SOURCE.md`.
 - The tunnel wrapper accepts a tunnel ID plus a user-only Runtime API key file or exported environment variable, and now prompts for omitted values when run interactively; it checks the local Agent Host first and uses the managed `tunnel-client runtimes connect` flow without exposing the key as a command-line value.
 - The current app is an adhoc/unsigned development distribution, not Developer ID signed or notarized; the friend guide documents the normal macOS Open Anyway flow.

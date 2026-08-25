@@ -1,2 +1,1 @@
-896d31daeb64fc4427bda8a01771de09a582e5f01eef6896548af928776b944f  Codex-BEG-0.1.0-mac-arm64.dmg
-db54cf75fbecd584c1b89bed7c569c5b2c680d38346a3be9637a2e5430ef3b03  Codex-BEG-mac-arm64.zip
+617c38dc6344e7c63e1bc9ccd42392f503878c35370eece0cd183b3fccadde2d  Codex-BEG-0.1.0-mac-arm64.dmg

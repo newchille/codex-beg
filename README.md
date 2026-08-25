@@ -29,7 +29,7 @@ The DMG is written to `apps/desktop/release/Codex-BEG-0.1.0-mac-arm64.dmg`. See 
 
 The agent host listens on `127.0.0.1:43123/mcp` when started by the desktop app. It never makes model API requests and does not invoke Codex CLI.
 
-To connect ChatGPT Developer Mode, install the official `tunnel-client` separately, create a profile named `codex-beg`, and point it at `http://127.0.0.1:43123/mcp`. Codex BEG does not bundle the tunnel client, store its runtime key, or provide an API fallback.
+To connect ChatGPT Developer Mode, install the official `tunnel-client` separately, then configure Tunnel ID + Runtime API key in Codex BEG → Connection. The app stores the key with OS-backed Electron `safeStorage`, verifies the tunnel, and controls the managed `codex-beg` runtime pointed at `http://127.0.0.1:43123/mcp`; `tunnel-client` itself is not bundled.
 
 ## Team setup from a GitHub checkout
 

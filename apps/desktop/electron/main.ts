@@ -1,20 +1,393 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, Tray } from "electron";
 import { randomBytes } from "node:crypto";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let agentHost: ChildProcess | null = null;
 let restartAttempts = 0;
 let stopping = false;
 let restartTimer: NodeJS.Timeout | undefined;
+let tunnelMonitorTimer: NodeJS.Timeout | undefined;
 let quitting = false;
 const execFileAsync = promisify(execFile);
 const adminToken = randomBytes(32).toString("hex");
+const TUNNEL_ALIAS = "codex-beg";
+const TUNNEL_ID_PATTERN = /^tunnel_[0-9a-f]{32}$/;
+interface TunnelRuntimeStatus {
+  alias: string;
+  installed: boolean;
+  processRunning: boolean;
+  healthy: boolean;
+  ready: boolean;
+  runtimeState: string;
+  tunnelId?: string;
+  uiUrl?: string;
+  executable?: string;
+  error?: string;
+  checkedAt: string;
+}
+
+type TunnelValidationState = "unconfigured" | "checking" | "valid" | "invalid";
+
+interface TunnelValidation {
+  state: TunnelValidationState;
+  message: string;
+  checkedAt?: string;
+}
+
+interface StoredTunnelConfig {
+  tunnelId: string;
+  apiKeyCiphertext: string;
+  updatedAt: string;
+}
+
+interface TunnelConfigView {
+  tunnelId: string;
+  hasApiKey: boolean;
+  secureStorageAvailable: boolean;
+  validation: TunnelValidation;
+}
+
+interface TunnelConfigSecret extends TunnelConfigView {
+  apiKey: string;
+}
+
+let tunnelValidation: TunnelValidation = { state: "unconfigured", message: "Add your Tunnel ID and Runtime API key." };
+
+function emitLog(message: string): void {
+  mainWindow?.webContents.send("agent:log", `[${new Date().toLocaleTimeString()}] ${message}`);
+}
+
+function emitTunnelStatus(status: TunnelRuntimeStatus): void {
+  mainWindow?.webContents.send("tunnel:status-changed", status);
+  updateTrayMenu(status);
+}
+
+function emitTunnelConfig(config: TunnelConfigView): void {
+  mainWindow?.webContents.send("tunnel:config-changed", config);
+}
+
+function tunnelConfigPath(): string {
+  return join(app.getPath("userData"), "tunnel-config.json");
+}
+
+function redactedError(value: string): string {
+  return value.replace(/sk-[A-Za-z0-9_-]+/g, "[redacted]").slice(0, 1_000);
+}
+
+function runtimeEnvironment(apiKey: string, tunnelId: string): NodeJS.ProcessEnv {
+  const { OPENAI_ADMIN_KEY: _adminKey, OPENAI_API_KEY: _fallbackKey, ...baseEnv } = process.env;
+  return { ...baseEnv, CONTROL_PLANE_API_KEY: apiKey, CONTROL_PLANE_TUNNEL_ID: tunnelId };
+}
+
+async function readStoredTunnelConfig(): Promise<StoredTunnelConfig | undefined> {
+  try {
+    const raw = await readFile(tunnelConfigPath(), "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+    const value = parsed as Partial<StoredTunnelConfig>;
+    if (typeof value.tunnelId !== "string" || typeof value.apiKeyCiphertext !== "string" || typeof value.updatedAt !== "string") return undefined;
+    return { tunnelId: value.tunnelId, apiKeyCiphertext: value.apiKeyCiphertext, updatedAt: value.updatedAt };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    return undefined;
+  }
+}
+
+async function tunnelConfigView(): Promise<TunnelConfigView> {
+  const stored = await readStoredTunnelConfig();
+  return {
+    tunnelId: stored?.tunnelId ?? "",
+    hasApiKey: Boolean(stored?.apiKeyCiphertext),
+    secureStorageAvailable: safeStorage.isEncryptionAvailable(),
+    validation: tunnelValidation,
+  };
+}
+
+async function loadTunnelConfigSecret(): Promise<TunnelConfigSecret | undefined> {
+  const stored = await readStoredTunnelConfig();
+  if (!stored) return undefined;
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("Secure credential storage is unavailable on this Mac.");
+  const apiKey = safeStorage.decryptString(Buffer.from(stored.apiKeyCiphertext, "base64"));
+  return { tunnelId: stored.tunnelId, apiKey, hasApiKey: Boolean(apiKey), secureStorageAvailable: true, validation: tunnelValidation };
+}
+
+async function persistTunnelConfig(tunnelId: string, apiKey: string): Promise<TunnelConfigView> {
+  const normalizedTunnelId = tunnelId.trim();
+  if (!TUNNEL_ID_PATTERN.test(normalizedTunnelId)) throw new Error("Tunnel ID must match tunnel_<32 lowercase hex characters>.");
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("Secure credential storage is unavailable; API key was not saved.");
+
+  const existing = await readStoredTunnelConfig();
+  const normalizedApiKey = apiKey.trim();
+  if (!normalizedApiKey && !existing?.apiKeyCiphertext) throw new Error("Runtime API key is required.");
+
+  const apiKeyCiphertext = normalizedApiKey
+    ? safeStorage.encryptString(normalizedApiKey).toString("base64")
+    : existing!.apiKeyCiphertext;
+  const value: StoredTunnelConfig = { tunnelId: normalizedTunnelId, apiKeyCiphertext, updatedAt: new Date().toISOString() };
+  const path = tunnelConfigPath();
+  const tempPath = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+  await mkdir(app.getPath("userData"), { recursive: true });
+  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  if (process.platform !== "win32") await chmod(tempPath, 0o600);
+  await rename(tempPath, path);
+  tunnelValidation = { state: "unconfigured", message: "Saved. Verify the credentials before starting the tunnel." };
+  const view = await tunnelConfigView();
+  emitTunnelConfig(view);
+  return view;
+}
+
+async function validateTunnelConfig(): Promise<TunnelConfigView> {
+  tunnelValidation = { state: "checking", message: "Checking Tunnel ID and Runtime API key…" };
+  emitTunnelConfig(await tunnelConfigView());
+  try {
+    const config = await loadTunnelConfigSecret();
+    if (!config) throw new Error("Save a Tunnel ID and Runtime API key first.");
+    if (!TUNNEL_ID_PATTERN.test(config.tunnelId)) throw new Error("Tunnel ID format is invalid.");
+    if (!config.apiKey) throw new Error("Runtime API key is missing.");
+    const executable = findTunnelClient();
+    if (!executable) throw new Error("tunnel-client is not installed or could not be found.");
+
+    const result = await execFileAsync(executable, ["admin", "--json", "tunnels", "get", config.tunnelId], {
+      timeout: 15_000,
+      env: runtimeEnvironment(config.apiKey, config.tunnelId),
+    });
+    const payload = parseJsonObject(result.stdout);
+    const returnedTunnelId = typeof payload?.id === "string"
+      ? payload.id
+      : typeof payload?.tunnel_id === "string"
+        ? payload.tunnel_id
+        : config.tunnelId;
+    if (returnedTunnelId !== config.tunnelId) throw new Error("The returned tunnel does not match the saved Tunnel ID.");
+
+    tunnelValidation = { state: "valid", message: "Credentials verified. Ready to start.", checkedAt: new Date().toISOString() };
+    emitLog("Tunnel credentials verified.");
+  } catch (error) {
+    const detail = error as { stdout?: string; stderr?: string; message?: string };
+    const raw = `${detail.stderr ?? ""}\n${detail.stdout ?? ""}\n${detail.message ?? ""}`.trim();
+    const message = /\b(401|403)\b/.test(raw)
+      ? "API key or tunnel access is invalid. Check Tunnels Read permission and the Tunnel ID."
+      : redactedError(raw || "Tunnel configuration could not be verified.");
+    tunnelValidation = { state: "invalid", message, checkedAt: new Date().toISOString() };
+    emitLog(`Tunnel credential check failed: ${message}`);
+  }
+  const view = await tunnelConfigView();
+  emitTunnelConfig(view);
+  return view;
+}
+
+let tunnelStatusCache: { at: number; value: TunnelRuntimeStatus } | undefined;
+
+function findTunnelClient(): string | undefined {
+  const names = process.platform === "win32" ? ["tunnel-client.exe", "tunnel-client.cmd", "tunnel-client"] : ["tunnel-client"];
+  const candidates: string[] = [];
+  const configured = process.env.TUNNEL_CLIENT_BIN?.trim();
+  if (configured) candidates.push(isAbsolute(configured) ? configured : resolve(configured));
+  for (const directory of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    for (const name of names) candidates.push(join(directory, name));
+  }
+  if (process.platform !== "win32") {
+    for (const directory of [join(homedir(), "bin"), join(homedir(), ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin"]) {
+      candidates.push(join(directory, "tunnel-client"));
+    }
+  }
+  return [...new Set(candidates)].find((candidate) => existsSync(candidate));
+}
+
+function parseJsonObject(value: string | undefined): Record<string, unknown> | undefined {
+  if (!value?.trim()) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeTunnelStatus(executable: string, payload: Record<string, unknown> | undefined, error?: string): TunnelRuntimeStatus {
+  const processRunning = payload?.process_running === true;
+  const healthy = payload?.healthy === true;
+  const ready = payload?.ready === true;
+  const reportedState = typeof payload?.runtime_state === "string" ? payload.runtime_state : undefined;
+  let runtimeState = reportedState ?? "stopped";
+  if (processRunning && ready) runtimeState = "ready";
+  else if (processRunning && healthy) runtimeState = "healthy";
+  else if (processRunning) runtimeState = "running";
+  return {
+    alias: "codex-beg",
+    installed: true,
+    processRunning,
+    healthy,
+    ready,
+    runtimeState,
+    ...(typeof payload?.tunnel_id === "string" ? { tunnelId: payload.tunnel_id } : {}),
+    ...(typeof payload?.ui_url === "string" ? { uiUrl: payload.ui_url } : {}),
+    executable,
+    ...(error ? { error: error.slice(0, 800) } : {}),
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+async function tunnelRuntimeStatus(force = false): Promise<TunnelRuntimeStatus> {
+  const now = Date.now();
+  if (!force && tunnelStatusCache && now - tunnelStatusCache.at < 1_500) return tunnelStatusCache.value;
+  const executable = findTunnelClient();
+  if (!executable) {
+    const value: TunnelRuntimeStatus = { alias: "codex-beg", installed: false, processRunning: false, healthy: false, ready: false, runtimeState: "not_installed", error: "tunnel-client was not found. Set TUNNEL_CLIENT_BIN or install it on PATH.", checkedAt: new Date().toISOString() };
+    tunnelStatusCache = { at: now, value };
+    return value;
+  }
+  try {
+    const result = await execFileAsync(executable, ["runtimes", "status", "codex-beg", "--json"], { timeout: 5_000 });
+    const payload = parseJsonObject(result.stdout);
+    const value = payload
+      ? normalizeTunnelStatus(executable, payload)
+      : normalizeTunnelStatus(executable, { runtime_state: "unknown" }, "tunnel-client returned invalid JSON status output.");
+    tunnelStatusCache = { at: now, value };
+    return value;
+  } catch (error) {
+    const detail = error as { stdout?: string; stderr?: string; message?: string };
+    const payload = parseJsonObject(detail.stdout);
+    const message = `${detail.stderr ?? ""}${detail.message ?? ""}`.trim() || (typeof payload?.error === "string" ? payload.error : "Tunnel runtime status is unavailable.");
+    const value = normalizeTunnelStatus(executable, payload, message);
+    tunnelStatusCache = { at: now, value };
+    return value;
+  }
+}
+
+async function startTunnel(): Promise<{ status: TunnelRuntimeStatus; config: TunnelConfigView; error?: string }> {
+  const configView = await validateTunnelConfig();
+  if (configView.validation.state !== "valid") {
+    return { status: await tunnelRuntimeStatus(true), config: configView, error: configView.validation.message };
+  }
+
+  try {
+    const config = await loadTunnelConfigSecret();
+    if (!config) throw new Error("Tunnel configuration is missing.");
+    const executable = findTunnelClient();
+    if (!executable) throw new Error("tunnel-client is not installed or could not be found.");
+
+    emitLog("Starting secure tunnel…");
+    await execFileAsync(executable, [
+      "runtimes", "connect",
+      "--alias", TUNNEL_ALIAS,
+      "--tunnel-id", config.tunnelId,
+      "--runtime-api-key", "env:CONTROL_PLANE_API_KEY",
+      "--mcp-server-url", "http://127.0.0.1:43123/mcp",
+      "--json",
+    ], {
+      timeout: 60_000,
+      env: runtimeEnvironment(config.apiKey, config.tunnelId),
+    });
+
+    tunnelStatusCache = undefined;
+    const status = await tunnelRuntimeStatus(true);
+    emitTunnelStatus(status);
+    emitLog(status.ready ? "Secure tunnel is ready." : `Tunnel started with state: ${status.runtimeState}.`);
+    return { status, config: await tunnelConfigView() };
+  } catch (error) {
+    const detail = error as { stdout?: string; stderr?: string; message?: string };
+    const raw = `${detail.stderr ?? ""}\n${detail.stdout ?? ""}\n${detail.message ?? ""}`.trim();
+    const message = redactedError(raw || "Tunnel could not be started.");
+    if (/\b(401|403)\b/.test(raw)) {
+      tunnelValidation = { state: "invalid", message: "The saved key can see the tunnel but cannot start it. Check Tunnels Use permission.", checkedAt: new Date().toISOString() };
+    }
+    emitLog(`Tunnel start failed: ${message}`);
+    const config = await tunnelConfigView();
+    emitTunnelConfig(config);
+    tunnelStatusCache = undefined;
+    const status = await tunnelRuntimeStatus(true);
+    emitTunnelStatus(status);
+    return { status, config, error: message };
+  }
+}
+
+async function stopTunnel(): Promise<{ status: TunnelRuntimeStatus; error?: string }> {
+  const executable = findTunnelClient();
+  if (!executable) {
+    const status = await tunnelRuntimeStatus(true);
+    return { status, error: "tunnel-client is not installed or could not be found." };
+  }
+  try {
+    emitLog("Stopping secure tunnel…");
+    await execFileAsync(executable, ["runtimes", "stop", TUNNEL_ALIAS, "--json"], { timeout: 20_000 });
+    emitLog("Secure tunnel stopped.");
+  } catch (error) {
+    const detail = error as { stdout?: string; stderr?: string; message?: string };
+    const message = redactedError(`${detail.stderr ?? ""}\n${detail.stdout ?? ""}\n${detail.message ?? ""}`.trim() || "Tunnel could not be stopped.");
+    emitLog(`Tunnel stop failed: ${message}`);
+    tunnelStatusCache = undefined;
+    const status = await tunnelRuntimeStatus(true);
+    emitTunnelStatus(status);
+    return { status, error: message };
+  }
+  tunnelStatusCache = undefined;
+  const status = await tunnelRuntimeStatus(true);
+  emitTunnelStatus(status);
+  return { status };
+}
+
+function tunnelMenuLabel(status?: TunnelRuntimeStatus): string {
+  if (!status) return "Tunnel: Checking…";
+  if (!status.installed) return "Tunnel: Not installed";
+  if (status.ready) return "Tunnel: Ready";
+  if (status.healthy) return "Tunnel: Healthy";
+  if (status.processRunning) return "Tunnel: Running";
+  return "Tunnel: Stopped";
+}
+
+function showMainWindow(): void {
+  if (!mainWindow) {
+    void createWindow();
+    return;
+  }
+  if (process.platform === "darwin") void app.dock?.show();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function updateTrayMenu(status?: TunnelRuntimeStatus): void {
+  if (!tray) return;
+  tray.setToolTip(status?.ready ? "Codex BEG — Tunnel ready" : "Codex BEG");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Open Codex BEG", click: showMainWindow },
+    { type: "separator" },
+    { label: tunnelMenuLabel(status), enabled: false },
+    {
+      label: status?.processRunning ? "Stop Tunnel" : "Start Tunnel",
+      enabled: Boolean(status?.installed && tunnelValidation.state === "valid"),
+      click: () => {
+        void (status?.processRunning ? stopTunnel() : startTunnel()).then((result) => {
+          if (result.error) {
+            emitLog(result.error);
+            showMainWindow();
+          }
+        });
+      },
+    },
+    { type: "separator" },
+    { label: "Quit Codex BEG", click: () => app.quit() },
+  ]));
+}
+
+function createTray(): void {
+  if (tray) return;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><g fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 9 6.8 5.4 10.4 9 6.8 12.6 3.2 9Z"/><path d="m7.6 9 3.6-3.6L14.8 9l-3.6 3.6L7.6 9Z"/></g></svg>`;
+  const image = nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
+  image.setTemplateImage(true);
+  tray = new Tray(image);
+  tray.on("click", showMainWindow);
+  updateTrayMenu();
+}
 
 function hostScript(): string {
   if (app.isPackaged) return join(process.resourcesPath, "agent-host", "main.js");
@@ -32,7 +405,8 @@ function startAgentHost(): void {
     windowsHide: true,
   });
   agentHost.stdin?.end(adminToken);
-  agentHost.stderr?.on("data", (chunk: Buffer) => mainWindow?.webContents.send("agent:log", chunk.toString("utf8")));
+  agentHost.stdout?.on("data", (chunk: Buffer) => emitLog(chunk.toString("utf8").trimEnd()));
+  agentHost.stderr?.on("data", (chunk: Buffer) => emitLog(chunk.toString("utf8").trimEnd()));
   agentHost.on("exit", () => {
     agentHost = null;
     mainWindow?.webContents.send("agent:status", { running: false });
@@ -116,9 +490,19 @@ async function approveWithNativeConfirmation(approvalId: string): Promise<unknow
   return postJson(`/admin/approval/approve/${encodeURIComponent(approvalId)}`, {});
 }
 function registerIpc(): void {
-  ipcMain.handle("agent:status", async () => ({ running: Boolean(agentHost), health: await fetchJson("/healthz"), events: await fetchJson("/events") }));
-  ipcMain.handle("agent:restart", async () => restartAgentHost());
+  ipcMain.handle("agent:status", async () => {
+    const [health, tunnel] = await Promise.all([fetchJson("/healthz"), tunnelRuntimeStatus()]);
+    updateTrayMenu(tunnel);
+    return { running: Boolean(agentHost), health, tunnel, checkedAt: new Date().toISOString() };
+  });
+  ipcMain.handle("tunnel:status", async () => tunnelRuntimeStatus(true));
+  ipcMain.handle("tunnel:config", async () => tunnelConfigView());
+  ipcMain.handle("tunnel:config-save", async (_event, input: { tunnelId: string; apiKey: string }) => persistTunnelConfig(input.tunnelId, input.apiKey));
+  ipcMain.handle("tunnel:config-validate", async () => validateTunnelConfig());
+  ipcMain.handle("tunnel:start", async () => startTunnel());
+  ipcMain.handle("tunnel:stop", async () => stopTunnel());
   ipcMain.handle("agent:events", async () => fetchJson("/events"));
+  ipcMain.handle("agent:restart", async () => restartAgentHost());
   ipcMain.handle("agent:approvals", async () => fetchJson("/admin/approvals"));
   ipcMain.handle("agent:operations", async () => fetchJson("/admin/operations"));
   ipcMain.handle("agent:recovery", async () => fetchJson("/admin/recovery"));
@@ -131,9 +515,7 @@ function registerIpc(): void {
   ipcMain.handle("workspace:select", async (_event, workspaceId: string) => postJson("/admin/workspace/select", { workspaceId }));
   ipcMain.handle("workspace:remove", async (_event, workspaceId: string) => postJson(`/admin/workspace/remove/${encodeURIComponent(workspaceId)}`, {}));
   ipcMain.handle("doctor:run", async () => {
-    let tunnel: unknown = { status: "not_found", message: "tunnel-client is not on PATH" };
-    try { const result = await execFileAsync("tunnel-client", ["doctor", "--profile", "codex-beg", "--explain"], { timeout: 15_000 }); tunnel = { status: "ok", output: `${result.stdout}${result.stderr}`.slice(-16_000) }; }
-    catch (error) { const value = error as { code?: string | number; stdout?: string; stderr?: string; message?: string }; tunnel = { status: "unavailable", code: value.code, output: `${value.stdout ?? ""}${value.stderr ?? ""}${value.message ?? ""}`.slice(-16_000) }; }
+    const tunnel = await tunnelRuntimeStatus(true);
     return {
       node: { available: true, output: process.versions.node },
       git: await checkExecutable(process.platform === "win32" ? "git.exe" : "git"),
@@ -158,20 +540,53 @@ async function createWindow(): Promise<void> {
   });
   if (process.env.ELECTRON_RENDERER_URL) await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   else await mainWindow.loadFile(join(here, "index.html"));
+  mainWindow.on("close", (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    mainWindow?.hide();
+    if (process.platform === "darwin") void app.dock?.hide();
+  });
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
-app.whenReady().then(async () => { registerIpc(); startAgentHost(); await createWindow(); app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); }); });
-app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+app.whenReady().then(async () => {
+  registerIpc();
+  startAgentHost();
+  createTray();
+  await createWindow();
+  const status = await tunnelRuntimeStatus(true);
+  emitTunnelStatus(status);
+  tunnelMonitorTimer = setInterval(() => { void tunnelRuntimeStatus(true).then(emitTunnelStatus); }, 2_000);
+  tunnelMonitorTimer.unref();
+  const config = await tunnelConfigView();
+  emitTunnelConfig(config);
+  if (config.hasApiKey && config.tunnelId) void validateTunnelConfig();
+  app.on("activate", showMainWindow);
+});
+app.on("window-all-closed", () => {});
 app.on("before-quit", (event) => {
-  stopping = true;
-  if (restartTimer) clearTimeout(restartTimer);
-  if (!agentHost || quitting) return;
+  if (quitting) return;
   event.preventDefault();
   quitting = true;
-  const child = agentHost;
-  const finish = () => { agentHost = null; app.quit(); };
-  child.once("exit", finish);
-  child.kill("SIGTERM");
-  setTimeout(finish, 6_000).unref();
+  stopping = true;
+  if (restartTimer) clearTimeout(restartTimer);
+  if (tunnelMonitorTimer) clearInterval(tunnelMonitorTimer);
+  void (async () => {
+    const tunnel = await tunnelRuntimeStatus(true);
+    if (tunnel.processRunning) await stopTunnel();
+
+    const child = agentHost;
+    if (child) {
+      child.kill("SIGTERM");
+      const exited = await waitForAgentHostExit(child, 6_000);
+      if (!exited) {
+        quitting = false;
+        stopping = false;
+        dialog.showErrorBox("Codex BEG is still running", "The local agent did not stop cleanly. Try Quit again after checking Diagnostics.");
+        return;
+      }
+    }
+    agentHost = null;
+    app.quit();
+  })();
 });
