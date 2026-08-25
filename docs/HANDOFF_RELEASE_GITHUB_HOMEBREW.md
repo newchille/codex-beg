@@ -22,6 +22,23 @@ This handoff is complete for the first public arm64 release.
 
 The release workflow is `.github/workflows/release.yml`. The tagged workflow passed `pnpm typecheck`, `pnpm test` (38/38), `pnpm lint`, `pnpm build`, icon generation, arm64 packaging, bundle checks, Agent Host hash checks, and SHA-256 asset generation. The release is ad-hoc signed at the complete bundle level but not Developer ID signed or notarized, so the workflow does not claim Gatekeeper approval. macOS may require the normal first-launch Open Anyway confirmation; users must not disable Gatekeeper globally.
 
+## Repair completion — 2026-08-26
+
+The original `v0.1.0` asset was found to have an invalid bundle-level signature: `codesign --verify --deep --strict` reported `code has no resources but signature indicates they must be present`, which caused macOS to show the “damaged” dialog. The packaging configuration now uses electron-builder `identity: "-"` with `hardenedRuntime: false`, and the release workflow verifies the complete bundle signature before publishing.
+
+- Repair commit: `55670da` (`fix: publish valid macOS bundle for clean install`)
+- Release tag: `v0.1.1`
+- Release workflow: [run 32898242536](https://github.com/newchille/codex-beg/actions/runs/32898242536) — success
+- Release: [v0.1.1](https://github.com/newchille/codex-beg/releases/tag/v0.1.1)
+- Published DMG SHA-256: `fb2b276a4cb4896bee8c6a3c265c928fb6bc3f661e4fbd3a8ecec3c36b73719a`
+- Homebrew tap commit: `068c01d779ef3f3fad58e949ad39bc50342aa92e`
+- clean command tested: `brew uninstall --cask codex-beg` followed by `brew install --cask newchille/tap/codex-beg`
+- installed app: `/Applications/Codex BEG.app`, version `0.1.1`
+- launch smoke passed; `/healthz` returned version `0.1.1`, 35 tools, and catalog hash `67325d2e949dde8a`
+- visual smoke confirmed the menu-bar tray glyph is present after clean install
+
+The separate push-triggered CI matrix still has a pre-existing ordering failure on macOS: its lint job runs before the workspace core build and cannot resolve `@codex-beg/core`. The release workflow itself passed its ordered verification and published the tested asset. This CI follow-up is outside the release/install handoff.
+
 The public third-party tap is `https://github.com/newchille/homebrew-tap`, with cask `Casks/codex-beg.rb`. The tested install path is:
 
 ```bash
@@ -37,7 +54,7 @@ Homebrew validation completed against the live release:
 - `brew install --cask newchille/tap/codex-beg`: passed.
 - `brew uninstall --cask codex-beg`: passed.
 - reinstall from the public tap: passed; final bundle is `/Applications/Codex BEG.app`.
-- installed-app launch smoke: passed after the standard first-launch confirmation for the ad-hoc app; exact executable was `/Applications/Codex BEG.app/Contents/MacOS/Codex BEG` and `/healthz` returned version `0.1.0`, 35 tools, and catalog hash `67325d2e949dde8a`.
+- installed-app launch smoke: passed after the standard first-launch confirmation for the ad-hoc app; exact executable was `/Applications/Codex BEG.app/Contents/MacOS/Codex BEG` and `/healthz` returned version `0.1.1`, 35 tools, and catalog hash `67325d2e949dde8a`.
 - `brew audit --new --cask newchille/tap/codex-beg`: no cask syntax/dependency errors remain. Homebrew may still report expected policy findings for this new ad-hoc public project; it is not Developer ID signed/notarized and the repository is not yet notable by Homebrew's stars/watchers/forks thresholds.
 - `brew upgrade --cask newchille/tap/codex-beg`: not run because no later version exists.
 

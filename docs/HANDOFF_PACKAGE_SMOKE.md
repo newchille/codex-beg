@@ -322,3 +322,13 @@ The non-secret package smoke was completed against the packaged app, not dev mod
 The live credentialed tunnel smoke was intentionally not run: no Runtime API key was supplied, and no key was printed, logged, committed, or written to the repository. Connection Save/Verify/Start/Stop and external ChatGPT connector verification remain manual after the operator supplies credentials.
 
 The app uses a complete ad-hoc bundle signature and remains a non-notarized development distribution. This package checkpoint was the prerequisite for the public distribution step; the original v0.1.0 asset was later found to have an invalid bundle-level signature and is being superseded by the v0.1.1 repair release.
+
+## Repair package smoke — 2026-08-26
+
+- `v0.1.1` package uses electron-builder `identity: "-"` with `hardenedRuntime: false`, producing a complete ad-hoc bundle signature instead of the invalid linker-only signature in the original v0.1.0 asset.
+- local arm64 DMG: `apps/desktop/release/Codex-BEG-0.1.1-mac-arm64.dmg`
+- local DMG SHA-256: `e588039a2c1080b71f0dc736ff131b2f86666e744f79a67a1506b0c70a604a38`
+- published DMG SHA-256: `fb2b276a4cb4896bee8c6a3c265c928fb6bc3f661e4fbd3a8ecec3c36b73719a`
+- `codesign --verify --deep --strict` passed for the local and Homebrew-installed v0.1.1 app; `spctl` rejects only because the build is ad-hoc and not notarized.
+- Homebrew clean install and launch passed; `/healthz` returned version `0.1.1`, 35 tools, and catalog hash `67325d2e949dde8a`.
+- clean-install visual smoke showed the menu-bar tray glyph present.
