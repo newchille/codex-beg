@@ -1,14 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { access, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { JsonStore } from "./persistence.js";
 import { PathViolationError, CodexBegError } from "./errors.js";
 import { EventBus } from "./events.js";
-import type { CommandConfig, ProjectType, RegistryState, Workspace } from "./types.js";
-import { PROJECT_TYPES } from "./types.js";
+import type { CommandConfig, ProjectType, RegistryState, SearchFilesResult, Workspace, WorkspaceKind } from "./types.js";
+import { PROJECT_TYPES, WORKSPACE_KINDS } from "./types.js";
 
 const EMPTY_REGISTRY: RegistryState = { schemaVersion: 1, workspaces: [], currentWorkspaceId: null };
-const IGNORED = new Set([".git", "node_modules", "dist", "build", ".next", "target", ".dart_tool"]);
+const IGNORED = new Set([".git", "node_modules", ".pnpm-store", ".turbo", "dist", "build", "out", ".output", ".next", "target", ".dart_tool", "coverage", "cache", ".cache", "vendor", "obj", ".venv", "venv", "__pycache__"]);
 
 function isInside(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -76,21 +77,58 @@ export class WorkspaceManager {
 
   constructor(private readonly store: JsonStore<RegistryState>, private readonly events = new EventBus()) {}
 
-  async init(): Promise<void> { this.state = await this.store.load(); }
+  async init(): Promise<void> {
+    this.state = await this.store.load();
+    let migrated = false;
+    for (const workspace of this.state.workspaces) {
+      if (!(workspace as Partial<Workspace>).kind) {
+        workspace.kind = WORKSPACE_KINDS.project;
+        migrated = true;
+      }
+    }
+    if (migrated) await this.store.save(this.state);
+  }
   getState(): RegistryState { return structuredClone(this.state); }
 
-  async add(rootPath: string, displayName?: string): Promise<Workspace> {
+  async add(rootPath: string, displayName?: string, kind: WorkspaceKind = WORKSPACE_KINDS.project, parentWorkspaceId?: string): Promise<Workspace> {
+    if (!isAbsolute(rootPath)) throw new PathViolationError("Workspace root must be an absolute path.");
     const root = await realpath(rootPath);
     const info = await stat(root);
     if (!info.isDirectory()) throw new CodexBegError("INVALID_WORKSPACE", "Workspace root must be a directory.");
-    const detected = await detectProject(root);
+    const existing = this.state.workspaces.find((item) => normalizeForCompare(item.canonicalRoot) === normalizeForCompare(root));
+    if (existing) {
+      if (existing.kind !== kind) throw new CodexBegError("WORKSPACE_KIND_CONFLICT", `Workspace already exists as ${existing.kind}; cannot reuse it as ${kind}.`);
+      return existing;
+    }
+    const detected = kind === WORKSPACE_KINDS.project ? await detectProject(root) : { type: PROJECT_TYPES.unknown, commands: {} };
     const now = new Date().toISOString();
-    const workspace: Workspace = { id: randomUUID(), displayName: displayName ?? root.split(/[\\/]/).pop() ?? "Workspace", canonicalRoot: root, projectType: detected.type, commands: detected.commands, createdAt: now, updatedAt: now };
+    const workspace: Workspace = { id: randomUUID(), displayName: displayName ?? root.split(/[\\/]/).pop() ?? "Workspace", kind, canonicalRoot: root, projectType: detected.type, commands: detected.commands, createdAt: now, updatedAt: now };
+    if (parentWorkspaceId) workspace.parentWorkspaceId = parentWorkspaceId;
     this.state.workspaces.push(workspace);
     if (!this.state.currentWorkspaceId) this.state.currentWorkspaceId = workspace.id;
     await this.store.save(this.state);
     this.events.emit("workspace.changed", { action: "added", workspaceId: workspace.id });
     return workspace;
+  }
+
+  async register(parentWorkspaceId: string, path: string, displayName?: string): Promise<Workspace> {
+    const parent = this.require(parentWorkspaceId);
+    if (parent.kind !== WORKSPACE_KINDS.machineRoot) throw new CodexBegError("INVALID_WORKSPACE", "Child projects may only be registered below a machine root.");
+    const resolved = await this.resolvePath(parentWorkspaceId, path);
+    const info = await stat(resolved.absolute);
+    if (!info.isDirectory()) throw new CodexBegError("INVALID_WORKSPACE", "Registered project path must be a directory.");
+    const canonicalPath = await realpath(resolved.absolute);
+    if (normalizeForCompare(parent.canonicalRoot) === normalizeForCompare(canonicalPath)) throw new CodexBegError("INVALID_WORKSPACE", "Child project path must be below the parent workspace root.");
+    const existing = this.state.workspaces.find((item) => normalizeForCompare(item.canonicalRoot) === normalizeForCompare(canonicalPath));
+    if (existing) {
+      if (existing.kind !== WORKSPACE_KINDS.project) throw new CodexBegError("WORKSPACE_KIND_CONFLICT", "A machine-root workspace cannot be registered as a child project.");
+      existing.parentWorkspaceId = parentWorkspaceId;
+      existing.updatedAt = new Date().toISOString();
+      await this.store.save(this.state);
+      this.events.emit("workspace.changed", { action: "registered", workspaceId: existing.id, parentWorkspaceId });
+      return existing;
+    }
+    return this.add(canonicalPath, displayName, WORKSPACE_KINDS.project, parentWorkspaceId);
   }
 
   async select(id: string): Promise<Workspace> {
@@ -104,6 +142,12 @@ export class WorkspaceManager {
   async remove(id: string): Promise<void> {
     this.require(id);
     this.state.workspaces = this.state.workspaces.filter((item) => item.id !== id);
+    const unlinkedAt = new Date().toISOString();
+    for (const workspace of this.state.workspaces) {
+      if (workspace.parentWorkspaceId !== id) continue;
+      delete workspace.parentWorkspaceId;
+      workspace.updatedAt = unlinkedAt;
+    }
     if (this.state.currentWorkspaceId === id) this.state.currentWorkspaceId = this.state.workspaces[0]?.id ?? null;
     await this.store.save(this.state);
     this.events.emit("workspace.changed", { action: "removed", workspaceId: id });
@@ -112,6 +156,12 @@ export class WorkspaceManager {
   require(id: string): Workspace {
     const workspace = this.state.workspaces.find((item) => item.id === id);
     if (!workspace) throw new CodexBegError("WORKSPACE_NOT_FOUND", `Unknown workspace: ${id}`);
+    return workspace;
+  }
+
+  requireProject(id: string): Workspace {
+    const workspace = this.require(id);
+    if (workspace.kind !== WORKSPACE_KINDS.project) throw new CodexBegError("PROJECT_WORKSPACE_REQUIRED", "This operation requires a project workspace.");
     return workspace;
   }
 
@@ -144,7 +194,7 @@ export class WorkspaceManager {
     const result: Array<{ path: string; kind: "file" | "directory"; size?: number }> = [];
     const visit = async (directory: string, depth: number): Promise<void> => {
       if (depth > maxDepth || result.length >= maxEntries) return;
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
+      for (const entry of (await readdir(directory, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
         if (IGNORED.has(entry.name)) continue;
         const absolute = join(directory, entry.name);
         const relativePath = relative(workspace.canonicalRoot, absolute);
@@ -180,7 +230,7 @@ export class WorkspaceManager {
     }
     const visit = async (directory: string): Promise<void> => {
       if (result.length >= maxResults) return;
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
+      for (const entry of (await readdir(directory, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
         if (IGNORED.has(entry.name) || entry.isSymbolicLink()) continue;
         const absolute = join(directory, entry.name);
         if (entry.isDirectory()) await visit(absolute);
@@ -200,8 +250,98 @@ export class WorkspaceManager {
     return result;
   }
 
+  async searchTextPage(workspaceId: string, query: string, rootPath?: string, offset = 0, maxResults = 100): Promise<{ items: Array<{ path: string; line: number; text: string }>; truncated: boolean; nextOffset: number | null }> {
+    const workspace = this.require(workspaceId);
+    const start = rootPath ? (await this.resolvePath(workspaceId, rootPath)).absolute : workspace.canonicalRoot;
+    const normalizedQuery = query.toLocaleLowerCase();
+    const items: Array<{ path: string; line: number; text: string }> = [];
+    let skipped = 0;
+    let truncated = false;
+    const consider = (path: string, line: number, text: string): void => {
+      if (truncated) return;
+      if (skipped < offset) { skipped += 1; return; }
+      if (items.length >= maxResults) { truncated = true; return; }
+      items.push({ path, line, text: text.slice(0, 500) });
+    };
+    const inspect = async (absolute: string): Promise<void> => {
+      if (truncated) return;
+      try {
+        const info = await stat(absolute);
+        if (!info.isFile() || info.size > 256 * 1024) return;
+        const content = await readFile(absolute);
+        if (content.includes(0)) return;
+        const relativePath = relative(workspace.canonicalRoot, absolute);
+        const lines = content.toString("utf8").split(/\r?\n/);
+        for (const [index, line] of lines.entries()) {
+          if (line.toLocaleLowerCase().includes(normalizedQuery)) consider(relativePath, index + 1, line);
+          if (truncated) return;
+        }
+      } catch { /* unreadable/binary files are skipped */ }
+    };
+    const rootStat = await stat(start);
+    if (rootStat.isFile()) {
+      await inspect(start);
+      return { items, truncated, nextOffset: truncated ? offset + items.length : null };
+    }
+    const visit = async (directory: string): Promise<void> => {
+      if (truncated) return;
+      for (const entry of (await readdir(directory, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
+        if (IGNORED.has(entry.name) || entry.isSymbolicLink()) continue;
+        const absolute = join(directory, entry.name);
+        if (entry.isDirectory()) await visit(absolute);
+        else if (entry.isFile()) await inspect(absolute);
+        if (truncated) return;
+      }
+    };
+    await visit(start);
+    return { items, truncated, nextOffset: truncated ? offset + items.length : null };
+  }
+
+  async searchFiles(workspaceId: string, query: string, rootPath?: string, offset = 0, maxResults = 200): Promise<SearchFilesResult> {
+    const workspace = this.require(workspaceId);
+    const start = rootPath ? (await this.resolvePath(workspaceId, rootPath)).absolute : workspace.canonicalRoot;
+    const normalizedQuery = query.toLocaleLowerCase();
+    const items: SearchFilesResult["items"] = [];
+    let matchedCount = 0;
+    let truncated = false;
+    const consider = (item: SearchFilesResult["items"][number]): void => {
+      if (truncated) return;
+      if (matchedCount < offset) { matchedCount += 1; return; }
+      if (items.length >= maxResults) { truncated = true; return; }
+      items.push(item);
+      matchedCount += 1;
+    };
+    const matches = (path: string) => path.toLocaleLowerCase().includes(normalizedQuery);
+    const rootStat = await stat(start);
+    if (rootStat.isFile()) {
+      const relativePath = relative(workspace.canonicalRoot, start);
+      if (matches(relativePath)) consider({ path: relativePath, kind: "file", size: rootStat.size });
+      return { items, truncated, nextOffset: truncated ? offset + items.length : null };
+    }
+    const visit = async (directory: string): Promise<void> => {
+      if (truncated) return;
+      const entries = (await readdir(directory, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        if (IGNORED.has(entry.name) || entry.isSymbolicLink()) continue;
+        const absolute = join(directory, entry.name);
+        const relativePath = relative(workspace.canonicalRoot, absolute);
+        if (entry.isDirectory()) {
+          if (matches(relativePath)) consider({ path: relativePath, kind: "directory" });
+          await visit(absolute);
+        } else if (entry.isFile() && matches(relativePath)) {
+          const info = await stat(absolute);
+          consider({ path: relativePath, kind: "file", size: info.size });
+        }
+        if (truncated) return;
+      }
+    };
+    await visit(start);
+    return { items, truncated, nextOffset: truncated ? offset + items.length : null };
+  }
+
   async sha256(absolute: string): Promise<string> {
-    const data = await readFile(absolute);
-    return createHash("sha256").update(data).digest("hex");
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(absolute)) hash.update(chunk);
+    return hash.digest("hex");
   }
 }

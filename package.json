@@ -15,6 +15,7 @@
     "test": "pnpm --filter @codex-beg/core build && pnpm -r test",
     "lint": "pnpm -r lint",
     "package": "pnpm --filter @codex-beg/desktop package",
+    "package:dmg": "pnpm --filter @codex-beg/desktop package:dmg",
     "inspect:mcp": "pnpm --filter @codex-beg/agent-host inspect:mcp"
   },
   "devDependencies": {

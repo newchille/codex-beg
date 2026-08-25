@@ -1,4 +1,5 @@
-import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { copyFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { JsonStore, ensureDir } from "./persistence.js";
@@ -7,31 +8,44 @@ import type { FileChange, RecoveryManifest } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
 interface RecoveryIndex { schemaVersion: 1; operations: RecoveryManifest[] }
+const RECOVERY_MAX_FILE_BYTES = 64 * 1024 * 1024;
+const RECOVERY_MAX_OPERATION_BYTES = 128 * 1024 * 1024;
+async function sha256File(path: string): Promise<string> { const hash = createHash("sha256"); for await (const chunk of createReadStream(path)) hash.update(chunk); return hash.digest("hex"); }
 
 export class RecoveryManager {
   private index: RecoveryIndex = { schemaVersion: 1, operations: [] };
   constructor(private readonly directory: string, private readonly indexStore: JsonStore<RecoveryIndex>, private readonly workspaces: WorkspaceManager) {}
   async init(): Promise<void> { this.index = await this.indexStore.load(); await this.prune(); }
   get(operationId: string): RecoveryManifest | undefined { return this.index.operations.find((item) => item.operationId === operationId); }
+  list(limit = 100): RecoveryManifest[] { const max = Math.min(Math.max(limit, 1), 500); return structuredClone([...this.index.operations].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)).slice(0, max)); }
 
   async capture(operationId: string, workspaceId: string, paths: string[]): Promise<RecoveryManifest> {
-    const workspace = this.workspaces.require(workspaceId);
-    const operationDir = join(this.directory, operationId);
-    await ensureDir(operationDir);
-    const changes: FileChange[] = [];
+    this.workspaces.require(workspaceId);
+    const plan: Array<{ absolute: string; relativePath: string; existed: boolean; bytes: number }> = [];
+    let totalBytes = 0;
     for (const path of paths) {
       const resolved = await this.workspaces.resolvePath(workspaceId, path, true);
       try {
         const info = await stat(resolved.absolute);
         if (!info.isFile()) throw new CodexBegError("NOT_A_FILE", `Recovery target is not a file: ${path}`);
-        const before = await readFile(resolved.absolute);
-        const blob = join(operationDir, `${changes.length}.before`);
-        await writeFile(blob, before);
-        changes.push({ path: resolved.relativePath, existed: true, beforeSha256: createHash("sha256").update(before).digest("hex"), bytes: before.byteLength });
+        if (info.size > RECOVERY_MAX_FILE_BYTES) throw new CodexBegError("RECOVERY_FILE_TOO_LARGE", `Recovery target exceeds the ${RECOVERY_MAX_FILE_BYTES}-byte per-file limit: ${path}`);
+        totalBytes += info.size;
+        if (totalBytes > RECOVERY_MAX_OPERATION_BYTES) throw new CodexBegError("RECOVERY_OPERATION_TOO_LARGE", `Recovery snapshot exceeds the ${RECOVERY_MAX_OPERATION_BYTES}-byte per-operation limit.`);
+        plan.push({ absolute: resolved.absolute, relativePath: resolved.relativePath, existed: true, bytes: info.size });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        changes.push({ path: resolved.relativePath, existed: false, bytes: 0 });
+        plan.push({ absolute: resolved.absolute, relativePath: resolved.relativePath, existed: false, bytes: 0 });
       }
+    }
+    const operationDir = join(this.directory, operationId);
+    await ensureDir(operationDir);
+    const changes: FileChange[] = [];
+    for (const [index, item] of plan.entries()) {
+      if (item.existed) {
+        const blob = join(operationDir, `${index}.before`);
+        await copyFile(item.absolute, blob);
+        changes.push({ path: item.relativePath, existed: true, beforeSha256: await sha256File(blob), bytes: item.bytes });
+      } else changes.push({ path: item.relativePath, existed: false, bytes: 0 });
     }
     const manifest: RecoveryManifest = { operationId, workspaceId, createdAt: new Date().toISOString(), status: "captured", changes };
     this.index.operations.push(manifest);
@@ -67,14 +81,23 @@ export class RecoveryManager {
   async restore(operationId: string): Promise<RecoveryManifest> {
     const manifest = this.getOrThrow(operationId);
     const operationDir = join(this.directory, operationId);
+    const resolvedChanges: Array<{ index: number; change: FileChange; absolute: string }> = [];
     for (const [index, change] of manifest.changes.entries()) {
       const resolved = await this.workspaces.resolvePath(manifest.workspaceId, change.path, true);
-      let current: Buffer | null = null;
-      try { current = await readFile(resolved.absolute); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      const currentHash = current ? createHash("sha256").update(current).digest("hex") : undefined;
+      let currentHash: string | undefined;
+      try {
+        const info = await stat(resolved.absolute);
+        if (!info.isFile()) throw new CodexBegError("NOT_A_FILE", `Recovery target is not a file: ${change.path}`);
+        currentHash = await sha256File(resolved.absolute);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
       if (change.afterSha256 !== currentHash) { manifest.status = "restore_conflict"; await this.indexStore.save(this.index); throw new CodexBegError("RESTORE_CONFLICT", `File changed after operation: ${change.path}`); }
-      if (change.existed) await copyFile(join(operationDir, `${index}.before`), resolved.absolute);
-      else await rm(resolved.absolute, { force: true });
+      resolvedChanges.push({ index, change, absolute: resolved.absolute });
+    }
+    for (const item of resolvedChanges) {
+      if (item.change.existed) await copyFile(join(operationDir, `${item.index}.before`), item.absolute);
+      else await rm(item.absolute, { force: true });
     }
     manifest.status = "restored";
     await this.indexStore.save(this.index);
