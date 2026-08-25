@@ -321,4 +321,4 @@ The non-secret package smoke was completed against the packaged app, not dev mod
 
 The live credentialed tunnel smoke was intentionally not run: no Runtime API key was supplied, and no key was printed, logged, committed, or written to the repository. Connection Save/Verify/Start/Stop and external ChatGPT connector verification remain manual after the operator supplies credentials.
 
-The app remains an unsigned/adhoc development distribution. This package checkpoint is ready for the public GitHub Release step; it is not yet a Homebrew-installable release.
+The app remains an unsigned/adhoc development distribution. This package checkpoint was the prerequisite for the public distribution step; it was subsequently published as GitHub Release `v0.1.0` and verified through the live `newchille/tap/codex-beg` Homebrew Cask in `docs/HANDOFF_RELEASE_GITHUB_HOMEBREW.md`.
