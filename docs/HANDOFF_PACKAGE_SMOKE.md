@@ -133,7 +133,7 @@ Important packaging acceptance:
 - packaged Agent Host must exist under `Contents/Resources/agent-host/main.js`
 - convert `renderer/src/app-icon.svg` into a supported macOS `.icns`/`.icon` asset first, then package with that asset
 - the electron-builder log must NOT say `default Electron icon is used`
-- app remains unsigned/adhoc because `identity` is intentionally null; do not fake signing or disable Gatekeeper
+- app uses a complete ad-hoc bundle signature (`identity: "-"`, hardened runtime disabled); it is not Developer ID signed/notarized, so do not present it as Gatekeeper-approved or disable Gatekeeper
 
 Verify architecture and bundle metadata:
 
@@ -231,7 +231,7 @@ Open/mount the generated DMG and verify it contains the new app with the new ico
 open apps/desktop/release/Codex-BEG-0.1.0-mac-arm64.dmg
 ```
 
-Do not weaken Gatekeeper. For an unsigned app, normal right-click Open / Open Anyway is acceptable.
+Do not weaken Gatekeeper. For this ad-hoc development app, normal right-click Open / Open Anyway is acceptable.
 
 ## Task 8 — Distribution copy and checksum
 
@@ -321,4 +321,4 @@ The non-secret package smoke was completed against the packaged app, not dev mod
 
 The live credentialed tunnel smoke was intentionally not run: no Runtime API key was supplied, and no key was printed, logged, committed, or written to the repository. Connection Save/Verify/Start/Stop and external ChatGPT connector verification remain manual after the operator supplies credentials.
 
-The app remains an unsigned/adhoc development distribution. This package checkpoint was the prerequisite for the public distribution step; it was subsequently published as GitHub Release `v0.1.0` and verified through the live `newchille/tap/codex-beg` Homebrew Cask in `docs/HANDOFF_RELEASE_GITHUB_HOMEBREW.md`.
+The app uses a complete ad-hoc bundle signature and remains a non-notarized development distribution. This package checkpoint was the prerequisite for the public distribution step; the original v0.1.0 asset was later found to have an invalid bundle-level signature and is being superseded by the v0.1.1 repair release.

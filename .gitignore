@@ -3,6 +3,8 @@ node_modules/
 dist/
 out/
 release/
+apps/desktop/electron/trayIconTemplate.png
+apps/desktop/electron/trayIconTemplate@2x.png
 .cache/
 .turbo/
 .nx/

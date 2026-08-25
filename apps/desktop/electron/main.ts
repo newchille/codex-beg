@@ -21,6 +21,7 @@ const execFileAsync = promisify(execFile);
 const adminToken = randomBytes(32).toString("hex");
 const TUNNEL_ALIAS = "codex-beg";
 const TUNNEL_ID_PATTERN = /^tunnel_[0-9a-f]{32}$/;
+const TRAY_ICON_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAAAXNSR0IArs4c6QAAADhlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAAqACAAQAAAABAAAAJKADAAQAAAABAAAAJAAAAAAJxsHGAAAAoklEQVRYCe3SIQ7AIBQD0A8Z4VokCC7KIbgNigNgMIhtmWtSz0RxrfnNC+5+n/3oXWstq7Va791KKZZSOjrPjzEshGBzzm/U0TXvcbf3vltr5r23nLPFGI9ucn/7Q/4oBzmuQQQFKgkBBwkSIihQSQg4SJAQQYFKQsBBgoQIClQSAg4SJERQoJIQcJAgIYIClYSAgwQJERSoJAQcJEiIoED1AEo1IGrHC658AAAAAElFTkSuQmCC";
 interface TunnelRuntimeStatus {
   alias: string;
   installed: boolean;
@@ -381,10 +382,12 @@ function updateTrayMenu(status?: TunnelRuntimeStatus): void {
 
 function createTray(): void {
   if (tray) return;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><g fill="none" stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 9 6.8 5.4 10.4 9 6.8 12.6 3.2 9Z"/><path d="m7.6 9 3.6-3.6L14.8 9l-3.6 3.6L7.6 9Z"/></g></svg>`;
-  const image = nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
-  image.setTemplateImage(true);
-  tray = new Tray(image);
+  const templatePath = join(app.getAppPath(), "electron/trayIconTemplate.png");
+  const image = nativeImage.createFromBuffer(Buffer.from(TRAY_ICON_PNG_BASE64, "base64"), { scaleFactor: 2 });
+  const imageSource = existsSync(templatePath) ? templatePath : image;
+  if (typeof imageSource !== "string" && imageSource.isEmpty()) throw new Error("Codex BEG tray icon could not be decoded.");
+  if (typeof imageSource !== "string") imageSource.setTemplateImage(true);
+  tray = new Tray(imageSource, "31d13e44-7df7-4b77-83d1-3c24d9e4d3db");
   tray.on("click", showMainWindow);
   updateTrayMenu();
 }
@@ -552,8 +555,8 @@ async function createWindow(): Promise<void> {
 app.whenReady().then(async () => {
   registerIpc();
   startAgentHost();
-  createTray();
   await createWindow();
+  createTray();
   const status = await tunnelRuntimeStatus(true);
   emitTunnelStatus(status);
   tunnelMonitorTimer = setInterval(() => { void tunnelRuntimeStatus(true).then(emitTunnelStatus); }, 2_000);

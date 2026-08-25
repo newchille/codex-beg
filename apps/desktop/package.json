@@ -1,6 +1,6 @@
 {
   "name": "@codex-beg/desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Codex BEG local-first safety core desktop application",
@@ -15,8 +15,8 @@
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "test": "vitest run --passWithNoTests",
     "lint": "pnpm typecheck",
-    "package:icon": "sh ../../scripts/build-macos-icon.sh",
-    "package": "pnpm --filter @codex-beg/core build && pnpm --filter @codex-beg/agent-host build && pnpm build && electron-builder --dir --publish never",
+    "package:icon": "sh ../../scripts/build-macos-icon.sh && sh ../../scripts/build-tray-icon.sh",
+    "package": "pnpm package:icon && pnpm --filter @codex-beg/core build && pnpm --filter @codex-beg/agent-host build && pnpm build && electron-builder --dir --publish never",
     "package:dmg": "pnpm package:icon && pnpm --filter @codex-beg/core build && pnpm --filter @codex-beg/agent-host build && pnpm build && electron-builder --mac dmg --arm64 --publish never"
   },
   "dependencies": {
@@ -40,9 +40,9 @@
     "productName": "Codex BEG",
     "directories": { "output": "release" },
     "artifactName": "Codex-BEG-${version}-mac-${arch}.${ext}",
-    "files": ["dist/**/*", "package.json", "!node_modules/**/*"],
+    "files": ["dist/**/*", "electron/trayIconTemplate.png", "electron/trayIconTemplate@2x.png", "package.json", "!node_modules/**/*"],
     "extraResources": [{ "from": "../agent-host/dist/main.js", "to": "agent-host/main.js" }],
     "win": { "target": [{ "target": "portable", "arch": ["x64"] }] },
-    "mac": { "target": ["dir"], "identity": null, "icon": "renderer/src/app-icon.icns" }
+    "mac": { "target": ["dir"], "identity": "-", "hardenedRuntime": false, "icon": "renderer/src/app-icon.icns" }
   }
 }

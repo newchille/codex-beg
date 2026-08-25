@@ -20,7 +20,7 @@ This handoff is complete for the first public arm64 release.
 - Published DMG SHA-256: `921e0d5aac77b09cb1630d8244e6195f0df1c9951db46aef5cb9a8698c124afc`
 - Release commit: `b33a16f` (`Prepare Codex BEG v0.1.0 release`)
 
-The release workflow is `.github/workflows/release.yml`. The tagged workflow passed `pnpm typecheck`, `pnpm test` (38/38), `pnpm lint`, `pnpm build`, icon generation, arm64 packaging, bundle checks, Agent Host hash checks, and SHA-256 asset generation. The release is intentionally unsigned/adhoc: no Developer ID signing or notarization credentials were available, so the workflow does not claim Gatekeeper approval. macOS may require the normal first-launch Open Anyway confirmation; users must not disable Gatekeeper globally.
+The release workflow is `.github/workflows/release.yml`. The tagged workflow passed `pnpm typecheck`, `pnpm test` (38/38), `pnpm lint`, `pnpm build`, icon generation, arm64 packaging, bundle checks, Agent Host hash checks, and SHA-256 asset generation. The release is ad-hoc signed at the complete bundle level but not Developer ID signed or notarized, so the workflow does not claim Gatekeeper approval. macOS may require the normal first-launch Open Anyway confirmation; users must not disable Gatekeeper globally.
 
 The public third-party tap is `https://github.com/newchille/homebrew-tap`, with cask `Casks/codex-beg.rb`. The tested install path is:
 
@@ -37,8 +37,8 @@ Homebrew validation completed against the live release:
 - `brew install --cask newchille/tap/codex-beg`: passed.
 - `brew uninstall --cask codex-beg`: passed.
 - reinstall from the public tap: passed; final bundle is `/Applications/Codex BEG.app`.
-- installed-app launch smoke: passed after the standard first-launch confirmation for the unsigned app; exact executable was `/Applications/Codex BEG.app/Contents/MacOS/Codex BEG` and `/healthz` returned version `0.1.0`, 35 tools, and catalog hash `67325d2e949dde8a`.
-- `brew audit --new --cask newchille/tap/codex-beg`: no cask syntax/dependency errors remain. Homebrew still reports the expected policy findings for this new unsigned public project: signature verification fails for the adhoc build and the repository is not yet notable by Homebrew's stars/watchers/forks thresholds.
+- installed-app launch smoke: passed after the standard first-launch confirmation for the ad-hoc app; exact executable was `/Applications/Codex BEG.app/Contents/MacOS/Codex BEG` and `/healthz` returned version `0.1.0`, 35 tools, and catalog hash `67325d2e949dde8a`.
+- `brew audit --new --cask newchille/tap/codex-beg`: no cask syntax/dependency errors remain. Homebrew may still report expected policy findings for this new ad-hoc public project; it is not Developer ID signed/notarized and the repository is not yet notable by Homebrew's stars/watchers/forks thresholds.
 - `brew upgrade --cask newchille/tap/codex-beg`: not run because no later version exists.
 
 No Runtime API key, Apple credential, certificate, GitHub PAT, or other secret was printed or committed. The local source tree was not cleaned after the release/install path became ready; the final Homebrew-installed app remains in place for the next operator action.
@@ -134,7 +134,7 @@ spctl --assess --verbose --type exec "Codex BEG.app"
 xcrun stapler validate "Codex BEG.app"
 ```
 
-If Apple signing credentials are not available yet, prepare the workflow/tap but clearly label the release as unsigned development software. Do not call it a frictionless public release.
+If Developer ID signing/notarization credentials are not available yet, clearly label the release as ad-hoc development software. Do not call it a frictionless public release.
 
 ## Task 3 — GitHub Release asset naming
 

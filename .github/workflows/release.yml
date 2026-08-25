@@ -52,6 +52,7 @@ jobs:
           test -f "$dmg"
           test -f "$app/Contents/Resources/agent-host/main.js"
           file "$app/Contents/MacOS/Codex BEG" | grep -q 'arm64'
+          codesign --verify --deep --strict --verbose=2 "$app"
           plutil -p "$app/Contents/Info.plist" | grep -q 'CFBundleIconFile'
           test -f "$app/Contents/Resources/icon.icns"
           test "$(shasum -a 256 apps/agent-host/dist/main.js | awk '{print $1}')" = "$(shasum -a 256 "$app/Contents/Resources/agent-host/main.js" | awk '{print $1}')"
@@ -59,14 +60,14 @@ jobs:
           cp "$dmg" release-assets/
           (cd release-assets && shasum -a 256 "$(basename "$dmg")" > SHA256SUMS.txt)
 
-      - name: Publish unsigned release
+      - name: Publish ad-hoc signed release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           body: |
             Codex BEG ${{ github.ref_name }} for Apple Silicon macOS.
 
-            This build is an unsigned/adhoc development distribution. macOS may require the normal Open Anyway confirmation. The official external `tunnel-client` prerequisite is not bundled.
+            This build is ad-hoc signed at the complete bundle level but is not Developer ID signed or notarized. macOS may require the normal Open Anyway confirmation. The official external `tunnel-client` prerequisite is not bundled.
           files: |
             release-assets/Codex-BEG-*-mac-arm64.dmg
             release-assets/SHA256SUMS.txt
