@@ -40,6 +40,7 @@ secrets/
 *.p12
 
 # Generated share packages; keep the human-readable setup guides trackable.
+dist-share/*.app/
 dist-share/*.dmg
 dist-share/*.zip
 dist-share/*.tar.gz
