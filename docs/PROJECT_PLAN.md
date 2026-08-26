@@ -410,6 +410,9 @@ Verified 2026-08-25:
 - 2026-08-26 public `0.1.2` release: tag `v0.1.2` points to commit `8f7ac07`; release workflow `32957424488` passed and published [the GitHub Release](https://github.com/newchille/codex-beg/releases/tag/v0.1.2) with `Codex-BEG-0.1.2-mac-arm64.dmg`.
 - Published `0.1.2` DMG SHA-256 is `48631816c54c40e50961db588b985a3974832e20bb98310fa07f9b4457bf5856`; the Homebrew cask now points to this exact asset at tap commit `eaf2f543d9d378ed09453411cfa004fd1c67ff73`.
 - The update/install command is `brew install --cask newchille/tap/codex-beg`; installation was intentionally not run in this turn.
+- 2026-08-27 CI repair: root `pnpm lint` now builds `@codex-beg/core` before recursive lint, so clean runners resolve the workspace package from its generated `dist` output; release `Verify source` passed with this fix.
+- 2026-08-27 public `0.1.3` release: tag `v0.1.3` points to commit `1468005`; release workflow `33003528172` passed and published [the GitHub Release](https://github.com/newchille/codex-beg/releases/tag/v0.1.3) with `Codex-BEG-0.1.3-mac-arm64.dmg`.
+- Published `0.1.3` DMG SHA-256 is `8be1e3b6393013f66bc87b804b783e09bb901c1d57f096050b95e3ab968349f7`; the Homebrew cask now points to this exact asset at tap commit `ae34d16e61ae11b3c836c3833607b68c4eb49811`.
 - Local cleanup remains intentionally deferred until after the release/install checkpoint.
 
 ## 8. Near-term roadmap after the current security checkpoint
