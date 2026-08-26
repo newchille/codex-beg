@@ -15,7 +15,7 @@ export const TOOL_NAMES = [
   "process_list", "process_read", "process_read_output", "process_stop", "operation_get",
 ] as const;
 export const TOOL_CATALOG_HASH = createHash("sha256").update(TOOL_NAMES.join("\n")).digest("hex").slice(0, 16);
-export const AGENT_HOST_VERSION = "0.1.1";
+export const AGENT_HOST_VERSION = "0.1.2";
 
 const ADMIN_TOKEN_HEADER = "x-codex-beg-admin-token";
 function adminAuthorized(request: IncomingMessage, expectedToken?: string): boolean {

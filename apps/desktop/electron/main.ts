@@ -7,10 +7,24 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  getTrayMenuState,
+  trayMenuStateEqual,
+  TRAY_ACTION_MENU_ID,
+  TRAY_STATUS_MENU_ID,
+  updateTrayMenuItems,
+  type TrayMenuState,
+} from "./tray-menu.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let trayMenu: Menu | null = null;
+let latestTrayStatus: TunnelRuntimeStatus | undefined;
+let appliedTrayMenuState: TrayMenuState | undefined;
+let trayMenuOpen = false;
+let pendingTrayMenuState: TrayMenuState | undefined;
+let trayTunnelActionRunning = false;
 let agentHost: ChildProcess | null = null;
 let restartAttempts = 0;
 let stopping = false;
@@ -337,15 +351,6 @@ async function stopTunnel(): Promise<{ status: TunnelRuntimeStatus; error?: stri
   return { status };
 }
 
-function tunnelMenuLabel(status?: TunnelRuntimeStatus): string {
-  if (!status) return "Tunnel: Checking…";
-  if (!status.installed) return "Tunnel: Not installed";
-  if (status.ready) return "Tunnel: Ready";
-  if (status.healthy) return "Tunnel: Healthy";
-  if (status.processRunning) return "Tunnel: Running";
-  return "Tunnel: Stopped";
-}
-
 function showMainWindow(): void {
   if (!mainWindow) {
     void createWindow();
@@ -356,28 +361,78 @@ function showMainWindow(): void {
   mainWindow.focus();
 }
 
+function hideMainWindow(): void {
+  mainWindow?.hide();
+  if (process.platform === "darwin") void app.dock?.hide();
+}
+
 function updateTrayMenu(status?: TunnelRuntimeStatus): void {
+  latestTrayStatus = status;
   if (!tray) return;
-  tray.setToolTip(status?.ready ? "Codex BEG — Tunnel ready" : "Codex BEG");
-  tray.setContextMenu(Menu.buildFromTemplate([
+  const state = getTrayMenuState(status, tunnelValidation.state);
+  if (appliedTrayMenuState && trayMenuStateEqual(appliedTrayMenuState, state)) return;
+
+  if (trayMenuOpen) {
+    pendingTrayMenuState = state;
+    return;
+  }
+
+  applyTrayMenuState(state);
+}
+
+function applyTrayMenuState(state: TrayMenuState): void {
+  if (!tray) return;
+
+  tray.setToolTip(state.tooltip);
+  const menu = Menu.buildFromTemplate([
     { label: "Open Codex BEG", click: showMainWindow },
     { type: "separator" },
-    { label: tunnelMenuLabel(status), enabled: false },
+    { id: TRAY_STATUS_MENU_ID, label: "Tunnel: Checking…", enabled: false },
     {
-      label: status?.processRunning ? "Stop Tunnel" : "Start Tunnel",
-      enabled: Boolean(status?.installed && tunnelValidation.state === "valid"),
+      id: TRAY_ACTION_MENU_ID,
+      label: "Start Tunnel",
+      enabled: false,
       click: () => {
-        void (status?.processRunning ? stopTunnel() : startTunnel()).then((result) => {
+        if (trayTunnelActionRunning) return;
+        const currentStatus = latestTrayStatus;
+        if (!currentStatus?.installed || tunnelValidation.state !== "valid") return;
+        trayTunnelActionRunning = true;
+        const action = currentStatus.processRunning ? stopTunnel() : startTunnel();
+        void action.then((result) => {
           if (result.error) {
             emitLog(result.error);
             showMainWindow();
           }
+        }).finally(() => {
+          trayTunnelActionRunning = false;
+          updateTrayMenu(latestTrayStatus);
         });
       },
     },
     { type: "separator" },
     { label: "Quit Codex BEG", click: () => app.quit() },
-  ]));
+  ]);
+  updateTrayMenuItems(menu, state);
+  menu.on("menu-will-show", () => {
+    trayMenuOpen = true;
+  });
+  menu.on("menu-will-close", () => {
+    trayMenuOpen = false;
+    const pendingState = pendingTrayMenuState;
+    pendingTrayMenuState = undefined;
+    if (pendingState) {
+      setImmediate(() => {
+        if (trayMenuOpen) {
+          pendingTrayMenuState = pendingState;
+          return;
+        }
+        applyTrayMenuState(pendingState);
+      });
+    }
+  });
+  trayMenu = menu;
+  tray.setContextMenu(menu);
+  appliedTrayMenuState = state;
 }
 
 function createTray(): void {
@@ -388,7 +443,6 @@ function createTray(): void {
   if (typeof imageSource !== "string" && imageSource.isEmpty()) throw new Error("Codex BEG tray icon could not be decoded.");
   if (typeof imageSource !== "string") imageSource.setTemplateImage(true);
   tray = new Tray(imageSource, "31d13e44-7df7-4b77-83d1-3c24d9e4d3db");
-  tray.on("click", showMainWindow);
   updateTrayMenu();
 }
 
@@ -537,22 +591,78 @@ function registerIpc(): void {
 }
 
 async function createWindow(): Promise<void> {
-  mainWindow = new BrowserWindow({ width: 1280, height: 820, minWidth: 980, minHeight: 640, webPreferences: { preload: join(here, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  mainWindow = new BrowserWindow({ width: 1280, height: 820, minWidth: 1280, maxWidth: 1280, minHeight: 820, maxHeight: 820, resizable: false, maximizable: false, fullscreenable: false, webPreferences: { preload: join(here, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   mainWindow.webContents.on("preload-error", (_event, preloadPath, error) => {
     console.error(`Codex BEG preload failed (${preloadPath}): ${error.message}`);
+  });
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (input.type === "keyDown" && input.meta && input.key.toLowerCase() === "q") {
+      event.preventDefault();
+      hideMainWindow();
+    }
   });
   if (process.env.ELECTRON_RENDERER_URL) await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   else await mainWindow.loadFile(join(here, "index.html"));
   mainWindow.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
-    mainWindow?.hide();
-    if (process.platform === "darwin") void app.dock?.hide();
+    hideMainWindow();
   });
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
+function installApplicationMenu(): void {
+  if (process.platform !== "darwin") return;
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: "Codex BEG",
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { label: "Quit Codex BEG", accelerator: "Command+Q", click: hideMainWindow },
+      ],
+    },
+    { label: "File", submenu: [{ role: "close" }] },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "pasteAndMatchStyle" },
+        { role: "delete" },
+        { role: "selectAll" },
+      ],
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    { label: "Window", submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "front" }] },
+    { label: "Help", submenu: [] },
+  ]));
+}
+
 app.whenReady().then(async () => {
+  installApplicationMenu();
   registerIpc();
   startAgentHost();
   await createWindow();
