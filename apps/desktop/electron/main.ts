@@ -25,6 +25,8 @@ let appliedTrayMenuState: TrayMenuState | undefined;
 let trayMenuOpen = false;
 let pendingTrayMenuState: TrayMenuState | undefined;
 let trayTunnelActionRunning = false;
+let tunnelAutoStartRunning = false;
+let tunnelAutoStartTask: Promise<void> | undefined;
 let agentHost: ChildProcess | null = null;
 let restartAttempts = 0;
 let stopping = false;
@@ -326,6 +328,42 @@ async function startTunnel(): Promise<{ status: TunnelRuntimeStatus; config: Tun
   }
 }
 
+async function waitForAgentHostReady(timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const health = await fetchJson("/healthz") as { ok?: boolean };
+    if (health?.ok === true) return true;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  return false;
+}
+
+async function startTunnelOnLaunch(): Promise<void> {
+  if (quitting || tunnelAutoStartRunning) return;
+  const config = await tunnelConfigView();
+  if (!config.hasApiKey || !config.tunnelId) return;
+
+  const currentStatus = await tunnelRuntimeStatus(true);
+  if (!currentStatus.installed || currentStatus.processRunning) return;
+
+  tunnelAutoStartRunning = true;
+  try {
+    const validated = await validateTunnelConfig();
+    if (validated.validation.state !== "valid") return;
+    if (!await waitForAgentHostReady()) {
+      emitLog("Secure tunnel auto-start skipped because Agent Host is not ready.");
+      return;
+    }
+    if (quitting) return;
+    const refreshedStatus = await tunnelRuntimeStatus(true);
+    if (refreshedStatus.processRunning) return;
+    const result = await startTunnel();
+    if (result.error) emitLog(`Secure tunnel auto-start failed: ${result.error}`);
+  } finally {
+    tunnelAutoStartRunning = false;
+  }
+}
+
 async function stopTunnel(): Promise<{ status: TunnelRuntimeStatus; error?: string }> {
   const executable = findTunnelClient();
   if (!executable) {
@@ -393,7 +431,7 @@ function applyTrayMenuState(state: TrayMenuState): void {
       label: "Start Tunnel",
       enabled: false,
       click: () => {
-        if (trayTunnelActionRunning) return;
+        if (trayTunnelActionRunning || tunnelAutoStartRunning) return;
         const currentStatus = latestTrayStatus;
         if (!currentStatus?.installed || tunnelValidation.state !== "valid") return;
         trayTunnelActionRunning = true;
@@ -673,8 +711,14 @@ app.whenReady().then(async () => {
   tunnelMonitorTimer.unref();
   const config = await tunnelConfigView();
   emitTunnelConfig(config);
-  if (config.hasApiKey && config.tunnelId) void validateTunnelConfig();
-  app.on("activate", showMainWindow);
+  if (config.hasApiKey && config.tunnelId) {
+    tunnelAutoStartTask = startTunnelOnLaunch().finally(() => {
+      tunnelAutoStartTask = undefined;
+    });
+  }
+  app.on("activate", () => {
+    if (!mainWindow) void createWindow();
+  });
 });
 app.on("window-all-closed", () => {});
 app.on("before-quit", (event) => {
@@ -685,8 +729,17 @@ app.on("before-quit", (event) => {
   if (restartTimer) clearTimeout(restartTimer);
   if (tunnelMonitorTimer) clearInterval(tunnelMonitorTimer);
   void (async () => {
+    if (tunnelAutoStartTask) await tunnelAutoStartTask;
     const tunnel = await tunnelRuntimeStatus(true);
-    if (tunnel.processRunning) await stopTunnel();
+    if (tunnel.processRunning) {
+      const stoppedTunnel = await stopTunnel();
+      if (stoppedTunnel.error || stoppedTunnel.status.processRunning) {
+        quitting = false;
+        stopping = false;
+        dialog.showErrorBox("Codex BEG is still running", "The secure tunnel did not stop cleanly. Try Quit again after checking Connection.");
+        return;
+      }
+    }
 
     const child = agentHost;
     if (child) {

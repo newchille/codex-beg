@@ -22,13 +22,13 @@ describe("Codex BEG MCP contract", () => {
     const runtime = new AgentRuntime(dataDirectory);
     await runtime.init();
     const server = createMcpServer(runtime);
-    const client = new Client({ name: "codex-beg-test", version: "0.1.3" }, { capabilities: {} });
+    const client = new Client({ name: "codex-beg-test", version: "0.1.4" }, { capabilities: {} });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const listed = await client.listTools();
     expect(listed.tools).toHaveLength(TOOL_NAMES.length);
-    expect(AGENT_HOST_VERSION).toBe("0.1.3");
+    expect(AGENT_HOST_VERSION).toBe("0.1.4");
     expect(TOOL_CATALOG_HASH).toMatch(/^[a-f0-9]{16}$/);
     const toolNames = listed.tools.map((item) => item.name);
     for (const name of ["workspace_list", "workspace_add", "workspace_register", "workspace_select", "workspace_current", "workspace_info", "workspace_tree", "workspace_snapshot", "read_many_files", "list_directory_page", "search_text_page", "search_files", "git_diff_check", "git_stage", "git_commit", "process_read_output"]) expect(toolNames).toContain(name);
