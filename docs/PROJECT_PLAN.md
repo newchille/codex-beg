@@ -407,6 +407,9 @@ Verified 2026-08-25:
 - `brew audit --new --cask newchille/tap/codex-beg` has no cask syntax errors; the remaining findings are expected for this first unsigned, not-yet-notable public project (adhoc signature verification and Homebrew popularity thresholds). Upgrade smoke is deferred until a later version exists.
 - 2026-08-26 repair: original v0.1.0 failed bundle signature validation and produced the macOS “damaged” dialog; v0.1.1 from commit `55670da` uses complete-bundle ad-hoc signing, passed release workflow `32898242536`, and was published with DMG SHA-256 `fb2b276a4cb4896bee8c6a3c265c928fb6bc3f661e4fbd3a8ecec3c36b73719a`.
 - 2026-08-26 clean-install repair smoke: cask updated at tap commit `068c01d779ef3f3fad58e949ad39bc50342aa92e`; `/Applications/Codex BEG.app` launched and `/healthz` returned version `0.1.1`, 35 tools, and catalog hash `67325d2e949dde8a`; the menu-bar tray glyph was visible.
+- 2026-08-26 public `0.1.2` release: tag `v0.1.2` points to commit `8f7ac07`; release workflow `32957424488` passed and published [the GitHub Release](https://github.com/newchille/codex-beg/releases/tag/v0.1.2) with `Codex-BEG-0.1.2-mac-arm64.dmg`.
+- Published `0.1.2` DMG SHA-256 is `48631816c54c40e50961db588b985a3974832e20bb98310fa07f9b4457bf5856`; the Homebrew cask now points to this exact asset at tap commit `eaf2f543d9d378ed09453411cfa004fd1c67ff73`.
+- The update/install command is `brew install --cask newchille/tap/codex-beg`; installation was intentionally not run in this turn.
 - Local cleanup remains intentionally deferred until after the release/install checkpoint.
 
 ## 8. Near-term roadmap after the current security checkpoint
