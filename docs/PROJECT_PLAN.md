@@ -4,7 +4,7 @@
 >
 > Read this file before starting a new phase. Update it when a phase changes state, a security invariant changes, or a major architectural decision is accepted. Historical handoff documents are useful context, but this file wins when they conflict with the current implementation.
 
-Last synced: 2026-08-28
+Last synced: 2026-08-29
 Repository: `/Users/11397288/DevProjects/gpt-mcp`
 Branch: `main`
 
@@ -427,6 +427,10 @@ Verified 2026-08-25:
 - 2026-08-27 public `0.1.4` release: tag `v0.1.4` points to commit `7f38f56`; release workflow `33009517793` passed all source/package verification steps and published [the GitHub Release](https://github.com/newchille/codex-beg/releases/tag/v0.1.4) with `Codex-BEG-0.1.4-mac-arm64.dmg`.
 - Published `0.1.4` DMG SHA-256 is `83ec2a1b08e6c440bca1b0df282850669d114de52300c8c87cc29e322262fdb3`; the Homebrew cask now points to this exact asset at tap commit `61ac74ad04b6bd54cf36136b0a3349c2234c11`.
 - `brew install`/`brew upgrade` and local cleanup remain intentionally deferred; the active local MCP session was preserved during the build and release.
+- 2026-08-29 Agent Host collision repair: Electron now acquires a single-instance lock before starting the Agent Host, forwards a second app launch to the existing window, and suppresses the restart loop when `127.0.0.1:43123` is already in use. The conflict path reports a clear recovery action instead of repeatedly logging the Node `EADDRINUSE` stack.
+- 2026-08-29 Desktop now displays the running app version in the sidebar from Electron `app.getVersion()`; the source and Agent Host package versions are aligned at `0.1.6`.
+- 2026-08-29 public `0.1.6` release: tag `v0.1.6` points to commit `c54156e`; release workflow `33196126995` passed and published [the GitHub Release](https://github.com/newchille/codex-beg/releases/tag/v0.1.6) with `Codex-BEG-0.1.6-mac-arm64.dmg`.
+- Published `0.1.6` DMG SHA-256 is `9ddd0b48f9a4d7baf6c6e9015d0be9edcd16e0253a12b8609ed051041c080535`; Homebrew tap commit `fca7273` points to this exact published hash. `brew info --cask newchille/tap/codex-beg` resolved version `0.1.6` and the same URL/hash; install/replace was intentionally not run to preserve the active local MCP session.
 
 ## 8. Near-term roadmap after the current security checkpoint
 
