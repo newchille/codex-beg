@@ -8,10 +8,20 @@ const DANGEROUS_PATTERNS = [
   /(^|[\\/\s])rm(\.exe)?([\\/\s]|$)/i,
   /(^|[\\/\s])(rmdir|del|erase)([\\/\s]|$)/i,
   /remove-item/i,
-  /git\s+(clean|reset\s+--hard|push\s+--force|branch\s+-D)/i,
+  /git\s+(clean|reset\s+--hard|push\s+--(?:force|force-with-lease)|branch\s+(?:-D|--delete\s+--force))/i,
   /checkout\s+--/i,
   /restore\s+--/i,
 ];
+const SYSTEM_SENSITIVE_PATTERNS = [
+  /(^|[\\/\s])(sudo|doas|osascript|launchctl|shutdown|reboot|pkill)([\\/\s]|$)/i,
+  /(^|[\\/\s])kill(\.exe)?([\\/\s]|$)/i,
+  /(^|[\\/\s])git[\\/\s]+push([\\/\s]|$)/i,
+];
+const SHELL_EXECUTABLES = new Set(["bash", "sh", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
+
+function executableBaseName(executable: string): string {
+  return executable.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
+}
 
 export function operationHash(request: OperationRequest): string {
   return createHash("sha256").update(JSON.stringify(request)).digest("hex");
@@ -24,10 +34,10 @@ export class PolicyEngine {
     const commandText = [request.executable ?? "", ...(request.arguments ?? [])].join(" ");
     if (["delete", "file_delete", "git_clean", "git_reset_hard", "force_push", "operation_restore_delete"].includes(request.kind)) return OPERATION_CLASSES.destructive;
     if (DANGEROUS_PATTERNS.some((pattern) => pattern.test(commandText))) return OPERATION_CLASSES.destructive;
-    if (["workspace_add", "workspace_register"].includes(request.kind)) return OPERATION_CLASSES.capabilityGrant;
-    if (request.kind.startsWith("system_") || request.kind === "shell_run") return OPERATION_CLASSES.systemSensitive;
-    if (request.kind.startsWith("project_") || request.kind.startsWith("process_")) return OPERATION_CLASSES.process;
-    if (["write_file", "apply_patch", "operation_restore", "git_stage", "git_commit"].includes(request.kind)) return OPERATION_CLASSES.writeReversible;
+    if (["workspace_add", "workspace_register", "workspace_create"].includes(request.kind)) return OPERATION_CLASSES.capabilityGrant;
+    if (request.kind.startsWith("system_") || request.kind === "shell_run" || SYSTEM_SENSITIVE_PATTERNS.some((pattern) => pattern.test(commandText)) || (request.executable && SHELL_EXECUTABLES.has(executableBaseName(request.executable)))) return OPERATION_CLASSES.systemSensitive;
+    if (request.kind.startsWith("project_") || request.kind.startsWith("process_") || request.kind === "command_run") return OPERATION_CLASSES.process;
+    if (["write_file", "apply_patch", "operation_restore", "directory_create", "workspace_refresh", "git_init", "git_add", "git_stage", "git_create_branch", "git_checkout", "git_commit"].includes(request.kind)) return OPERATION_CLASSES.writeReversible;
     return OPERATION_CLASSES.readOnly;
   }
 

@@ -66,6 +66,69 @@ describe("workspace isolation", () => {
     expect(await readFile(join(child, "package.json"), "utf8")).toContain("scripts");
   });
 
+  it("creates a child workspace only after capability approval and refreshes project metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-beg-create-root-"));
+    const data = await mkdtemp(join(tmpdir(), "codex-beg-create-data-"));
+    const runtime = new AgentRuntime(data);
+    await runtime.init();
+    const parent = await runtime.addWorkspace(root, "DevProjects", "machine_root");
+
+    await expect(runtime.createWorkspaceFromMcp({ parentWorkspaceId: parent.id, path: "example-app" })).rejects.toBeInstanceOf(ApprovalRequiredError);
+    const approval = runtime.approvalsList().at(-1)!;
+    expect(runtime.workspaceList().workspaces.some((workspace) => workspace.canonicalRoot.endsWith("example-app"))).toBe(false);
+    await runtime.approvalApprove(approval.approvalId);
+    const created = runtime.operationGet(approval.operationId).result as { id: string; projectType: string };
+    expect(created.projectType).toBe("unknown");
+    await writeFile(join(root, "example-app", "pubspec.yaml"), "name: example_app\n");
+    const refreshed = await runtime.refreshWorkspaceFromMcp({ workspaceId: created.id });
+    expect(refreshed.projectType).toBe("flutter");
+    expect(refreshed.commands.test?.args).toEqual(["test"]);
+    await runtime.shutdown();
+  });
+
+  it("refreshes Python project metadata from pyproject.toml", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-beg-python-root-"));
+    const data = await mkdtemp(join(tmpdir(), "codex-beg-python-data-"));
+    const runtime = new AgentRuntime(data);
+    await runtime.init();
+    const workspace = await runtime.addWorkspace(root, "python-app", "project");
+    expect(workspace.projectType).toBe("unknown");
+    await writeFile(join(root, "pyproject.toml"), "[project]\nname = 'python-app'\n");
+    const refreshed = await runtime.refreshWorkspaceFromMcp({ workspaceId: workspace.id });
+    expect(refreshed.projectType).toBe("python");
+    expect(refreshed.commands.test).toEqual({ executable: "python3", args: ["-m", "pytest"] });
+    await runtime.shutdown();
+  });
+
+  it("runs structured commands and keeps cwd inside the project workspace", async () => {
+    const { runtime, root } = await fixture();
+    const workspace = runtime.workspaceCurrent()!;
+    const result = await runtime.commandRun({ workspaceId: workspace.id, executable: "node", args: ["-e", "process.stdout.write('stdout'); process.stderr.write('stderr')"] });
+    expect(result).toMatchObject({ exitCode: 0, stdout: "stdout", stderr: "stderr", timedOut: false });
+    expect(await readFile(join(root, "package.json"), "utf8")).toContain("scripts");
+    await expect(runtime.commandRun({ workspaceId: workspace.id, executable: "node", cwd: "../", args: [] })).rejects.toMatchObject({ code: "PATH_OUTSIDE_WORKSPACE" });
+    await expect(runtime.commandRun({ workspaceId: workspace.id, executable: "node", env: { PATH: "blocked" }, args: [] })).rejects.toThrow(/PATH cannot be overridden/);
+    await expect(runtime.commandRun({ workspaceId: workspace.id, executable: "git", args: ["-C", root, "status"] })).rejects.toMatchObject({ code: "GIT_WORKSPACE_BOUNDARY" });
+    const timedOut = await runtime.commandRun({ workspaceId: workspace.id, executable: "node", args: ["-e", "setTimeout(() => {}, 5000)"], timeoutSeconds: 1 });
+    expect(timedOut.timedOut).toBe(true);
+    await expect(runtime.commandRun({ workspaceId: workspace.id, executable: "sh", args: ["-c", "printf shell"] })).rejects.toBeInstanceOf(ApprovalRequiredError);
+    expect(runtime.approvalsList().at(-1)?.classification).toBe("SYSTEM_SENSITIVE");
+    await runtime.shutdown();
+  });
+
+  it("starts managed processes, accepts bounded stdin, and exposes only its process id", async () => {
+    const { runtime } = await fixture();
+    const workspace = runtime.workspaceCurrent()!;
+    const started = await runtime.processStart({ workspaceId: workspace.id, executable: "node", args: ["-e", "process.stdin.once('data', data => { process.stdout.write(data); process.exit(0); })"] });
+    expect(started.status).toBe("running");
+    expect(started.pid).toBeTypeOf("number");
+    await expect(runtime.processWrite({ processId: started.processId, input: "hot reload\n" })).resolves.toMatchObject({ processId: started.processId });
+    const exited = await runtime.processes.wait(started.processId);
+    expect(exited.stdout).toContain("hot reload");
+    await expect(runtime.processWrite({ processId: "00000000-0000-0000-0000-000000000000", input: "nope" })).rejects.toMatchObject({ code: "PROCESS_NOT_FOUND" });
+    await runtime.shutdown();
+  });
+
   it("persists registry and rejects stale overwrites", async () => {
     const { runtime, root } = await fixture();
     const workspace = runtime.workspaceCurrent()!;

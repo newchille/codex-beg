@@ -10,6 +10,7 @@ const api = {
   tunnelStop: () => ipcRenderer.invoke("tunnel:stop"),
   restartAgentHost: () => ipcRenderer.invoke("agent:restart"),
   events: () => ipcRenderer.invoke("agent:events"),
+  activity: () => ipcRenderer.invoke("agent:activity"),
   approvals: () => ipcRenderer.invoke("agent:approvals"),
   operations: () => ipcRenderer.invoke("agent:operations"),
   recovery: () => ipcRenderer.invoke("agent:recovery"),

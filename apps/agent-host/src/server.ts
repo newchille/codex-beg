@@ -5,17 +5,17 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { ZodError } from "zod";
-import { AgentRuntime, CodexBegError, GitCommitInput, GitStageInput, ListDirectoryPageInput, ProcessReadOutputInput, ProjectCommandInput, ReadFileInput, ReadManyFilesInput, RelativePathInput, SearchFilesInput, SearchInput, SearchTextPageInput, WorkspaceAddInput, WorkspaceIdInput, WorkspaceRegisterInput, WriteFileInput } from "@codex-beg/core";
+import { AgentRuntime, CodexBegError, GitCheckoutInput, GitCommitInput, GitCreateBranchInput, GitStageInput, ListDirectoryPageInput, ProcessIdInput, ProcessReadOutputInput, ProjectCommandInput, ReadFileInput, ReadManyFilesInput, RelativePathInput, SearchFilesInput, SearchInput, SearchTextPageInput, WorkspaceAddInput, WorkspaceIdInput, WorkspaceRegisterInput, WriteFileInput } from "@codex-beg/core";
 
 export const TOOL_NAMES = [
-  "workspace_list", "workspace_add", "workspace_register", "workspace_select", "workspace_current", "workspace_info", "workspace_tree", "workspace_snapshot",
+  "workspace_list", "workspace_add", "workspace_register", "workspace_create", "workspace_refresh", "workspace_select", "workspace_current", "workspace_info", "workspace_tree", "workspace_snapshot",
   "read_file", "read_many_files", "list_directory", "list_directory_page", "search_text", "search_text_page", "search_files", "file_info", "write_file", "apply_patch",
-  "git_status", "git_diff", "git_diff_check", "git_log", "git_show", "git_stage", "git_commit",
+  "directory_create", "command_run", "git_status", "git_diff", "git_diff_check", "git_log", "git_show", "git_init", "git_add", "git_stage", "git_create_branch", "git_checkout", "git_commit",
   "project_test", "project_lint", "project_typecheck", "project_build", "project_dev",
-  "process_list", "process_read", "process_read_output", "process_stop", "operation_get",
+  "process_list", "process_read", "process_read_output", "process_start", "process_write", "process_stop", "operation_get",
 ] as const;
 export const TOOL_CATALOG_HASH = createHash("sha256").update(TOOL_NAMES.join("\n")).digest("hex").slice(0, 16);
-export const AGENT_HOST_VERSION = "0.1.4";
+export const AGENT_HOST_VERSION = "0.1.5";
 
 const ADMIN_TOKEN_HEADER = "x-codex-beg-admin-token";
 function adminAuthorized(request: IncomingMessage, expectedToken?: string): boolean {
@@ -38,6 +38,8 @@ export function createMcpServer(runtime: AgentRuntime): Server {
     tool("workspace_list", "List registered machine roots and project workspaces.", {}),
     tool("workspace_add", "Register an absolute local directory as a project or machine root.", { rootPath: { type: "string" }, displayName: { type: "string" }, kind: { type: "string", enum: ["machine_root", "project"] } }, ["rootPath"]),
     tool("workspace_register", "Register an existing child project below a registered workspace using a relative path.", { parentWorkspaceId: { type: "string" }, path: { type: "string" }, displayName: { type: "string" } }, ["parentWorkspaceId", "path"]),
+    tool("workspace_create", "Create and register a child project directory below a machine-root workspace.", { parentWorkspaceId: { type: "string" }, path: { type: "string" }, displayName: { type: "string" }, initializeGit: { type: "boolean" } }, ["parentWorkspaceId", "path"]),
+    tool("workspace_refresh", "Re-scan a workspace's current project type and configured commands.", { workspaceId: { type: "string" } }, ["workspaceId"]),
     tool("workspace_select", "Select the active registered workspace.", { workspaceId: { type: "string" } }, ["workspaceId"]),
     tool("workspace_current", "Return the current active workspace.", {}),
     tool("workspace_info", "Return metadata for a registered workspace.", { workspaceId: { type: "string" } }, ["workspaceId"]),
@@ -53,17 +55,25 @@ export function createMcpServer(runtime: AgentRuntime): Server {
     tool("file_info", "Return metadata and hash for a workspace-relative path.", { workspaceId: { type: "string" }, path: { type: "string" } }, ["workspaceId", "path"]),
     tool("write_file", "Create or overwrite a UTF-8 file with hash-checked reversible recovery.", { workspaceId: { type: "string" }, path: { type: "string" }, content: { type: "string" }, expectedSha256: { type: "string" } }, ["workspaceId", "path", "content"]),
     tool("apply_patch", "Apply an atomic bounded unified patch to workspace files.", { workspaceId: { type: "string" }, patch: { type: "string" } }, ["workspaceId", "patch"]),
+    tool("directory_create", "Create a directory inside a registered workspace.", { workspaceId: { type: "string" }, path: { type: "string" } }, ["workspaceId", "path"]),
+    tool("command_run", "Run a bounded structured executable and argument array inside a project workspace and return bounded output.", { workspaceId: { type: "string" }, executable: { type: "string" }, args: { type: "array", maxItems: 128, items: { type: "string" } }, cwd: { type: "string" }, env: { type: "object", additionalProperties: { type: "string" } }, timeoutSeconds: { type: "number" } }, ["workspaceId", "executable"]),
     tool("git_status", "Read Git status for the selected workspace.", { workspaceId: { type: "string" } }, ["workspaceId"]),
     tool("git_diff", "Read the current Git diff.", { workspaceId: { type: "string" } }, ["workspaceId"]),
     tool("git_diff_check", "Check the working-tree diff for whitespace errors without modifying files.", { workspaceId: { type: "string" } }, ["workspaceId"]),
     tool("git_log", "Read recent Git history.", { workspaceId: { type: "string" } }, ["workspaceId"]),
     tool("git_show", "Read a bounded Git ref summary.", { workspaceId: { type: "string" }, ref: { type: "string" } }, ["workspaceId"]),
+    tool("git_init", "Initialize Git metadata in a project workspace.", { workspaceId: { type: "string" } }, ["workspaceId"]),
+    tool("git_add", "Stage existing workspace files using validated relative paths; deletions and directories are not staged.", { workspaceId: { type: "string" }, paths: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" } } }, ["workspaceId", "paths"]),
     tool("git_stage", "Stage existing workspace files using validated relative paths; deletions and directories are not staged.", { workspaceId: { type: "string" }, paths: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" } } }, ["workspaceId", "paths"]),
+    tool("git_create_branch", "Create and switch to a new Git branch without shell parsing.", { workspaceId: { type: "string" }, branchName: { type: "string" } }, ["workspaceId", "branchName"]),
+    tool("git_checkout", "Switch to an existing Git branch without force or discard flags.", { workspaceId: { type: "string" }, branchName: { type: "string" } }, ["workspaceId", "branchName"]),
     tool("git_commit", "Create a Git commit from the current index using a message argument (no shell parsing).", { workspaceId: { type: "string" }, message: { type: "string" } }, ["workspaceId", "message"]),
     ...(["test", "lint", "typecheck", "build", "dev"] as const).map((name) => tool(`project_${name}`, `Run the configured ${name} project command.`, { workspaceId: { type: "string" }, timeoutSeconds: { type: "number" } }, ["workspaceId"])),
     tool("process_list", "List managed processes and bounded logs.", {}),
     tool("process_read", "Read one managed process snapshot; use process_read_output for bounded logs.", { processId: { type: "string" } }, ["processId"]),
     tool("process_read_output", "Read a bounded page from retained stdout or stderr using a logical output offset.", { processId: { type: "string" }, stream: { type: "string", enum: ["stdout", "stderr"] }, offset: { type: "number" }, maxChars: { type: "number" } }, ["processId", "stream"]),
+    tool("process_start", "Start a long-running managed executable with structured arguments inside a project workspace.", { workspaceId: { type: "string" }, executable: { type: "string" }, args: { type: "array", maxItems: 128, items: { type: "string" } }, cwd: { type: "string" }, env: { type: "object", additionalProperties: { type: "string" } }, timeoutSeconds: { type: "number" } }, ["workspaceId", "executable"]),
+    tool("process_write", "Write bounded stdin to a process created by process_start or another managed project command.", { processId: { type: "string" }, input: { type: "string" } }, ["processId", "input"]),
     tool("process_stop", "Stop one managed process.", { processId: { type: "string" } }, ["processId"]),
     tool("operation_get", "Read an operation result or approval-required status.", { operationId: { type: "string" } }, ["operationId"]),
   ] }));
@@ -77,6 +87,8 @@ export function createMcpServer(runtime: AgentRuntime): Server {
         case "workspace_list": result = runtime.workspaceList(); break;
         case "workspace_add": result = await runtime.addWorkspaceFromMcp(args); break;
         case "workspace_register": result = await runtime.registerWorkspaceFromMcp(args); break;
+        case "workspace_create": result = await runtime.createWorkspaceFromMcp(args); break;
+        case "workspace_refresh": result = await runtime.refreshWorkspaceFromMcp(args); break;
         case "workspace_select": { const input = WorkspaceIdInput.parse(args); result = await runtime.selectWorkspace(input.workspaceId); break; }
         case "workspace_current": result = runtime.workspaceCurrent(); break;
         case "workspace_info": { const input = WorkspaceIdInput.parse(args); result = runtime.workspaceInfo(input.workspaceId); break; }
@@ -92,12 +104,18 @@ export function createMcpServer(runtime: AgentRuntime): Server {
         case "file_info": { const input = RelativePathInput.parse(args); result = await runtime.fileInfo(input.workspaceId, input.path); break; }
         case "write_file": result = await runtime.writeFile(WriteFileInput.parse(args)); break;
         case "apply_patch": result = await runtime.applyPatch(args); break;
+        case "directory_create": result = await runtime.directoryCreate(args); break;
+        case "command_run": result = await runtime.commandRun(args); break;
         case "git_status": { const input = WorkspaceIdInput.parse(args); result = await runtime.gitStatus(input.workspaceId); break; }
         case "git_diff": { const input = WorkspaceIdInput.parse(args); result = await runtime.gitDiff(input.workspaceId); break; }
         case "git_diff_check": { const input = WorkspaceIdInput.parse(args); result = await runtime.gitDiffCheck(input.workspaceId); break; }
         case "git_log": { const input = WorkspaceIdInput.parse(args); result = await runtime.gitLog(input.workspaceId); break; }
         case "git_show": { const input = WorkspaceIdInput.parse(args); result = await runtime.gitShow(input.workspaceId, typeof args.ref === "string" ? args.ref : undefined); break; }
+        case "git_init": result = await runtime.gitInit(args); break;
+        case "git_add": result = await runtime.gitAdd(args); break;
         case "git_stage": result = await runtime.gitStage(GitStageInput.parse(args)); break;
+        case "git_create_branch": result = await runtime.gitCreateBranch(GitCreateBranchInput.parse(args)); break;
+        case "git_checkout": result = await runtime.gitCheckout(GitCheckoutInput.parse(args)); break;
         case "git_commit": result = await runtime.gitCommit(GitCommitInput.parse(args)); break;
         case "project_test": result = await runtime.projectCommand("test", ProjectCommandInput.parse(args)); break;
         case "project_lint": result = await runtime.projectCommand("lint", ProjectCommandInput.parse(args)); break;
@@ -105,9 +123,11 @@ export function createMcpServer(runtime: AgentRuntime): Server {
         case "project_build": result = await runtime.projectCommand("build", ProjectCommandInput.parse(args)); break;
         case "project_dev": result = await runtime.projectCommand("dev", ProjectCommandInput.parse(args)); break;
         case "process_list": result = runtime.processList(); break;
-        case "process_read": result = runtime.processRead(String(args.processId)); break;
+        case "process_read": { const input = ProcessIdInput.parse(args); result = runtime.processRead(input.processId); break; }
         case "process_read_output": result = runtime.processReadOutput(ProcessReadOutputInput.parse(args)); break;
-        case "process_stop": result = await runtime.processStop(String(args.processId)); break;
+        case "process_start": result = await runtime.processStart(args); break;
+        case "process_write": result = await runtime.processWrite(args); break;
+        case "process_stop": { const input = ProcessIdInput.parse(args); result = await runtime.processStop(input.processId); break; }
         case "operation_get": result = runtime.operationGet(String(args.operationId)); break;
         default: throw new CodexBegError("TOOL_NOT_FOUND", `Unknown tool: ${name}`);
       }
@@ -142,6 +162,7 @@ export async function startHttpServer(runtime: AgentRuntime, port = 43123, admin
       return;
     }
     if (request.url?.startsWith("/events")) { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(runtime.events.recent())); return; }
+    if (request.url === "/admin/activity" && request.method === "GET") { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(runtime.activityList())); return; }
     if (request.url === "/admin/state" && request.method === "GET") { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(runtime.workspaceList())); return; }
     if (request.url === "/admin/approvals" && request.method === "GET") { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(runtime.approvalsList())); return; }
     if (request.url === "/admin/operations" && request.method === "GET") { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(runtime.operationList())); return; }

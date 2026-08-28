@@ -4,7 +4,7 @@
 >
 > Read this file before starting a new phase. Update it when a phase changes state, a security invariant changes, or a major architectural decision is accepted. Historical handoff documents are useful context, but this file wins when they conflict with the current implementation.
 
-Last synced: 2026-08-26
+Last synced: 2026-08-28
 Repository: `/Users/11397288/DevProjects/gpt-mcp`
 Branch: `main`
 
@@ -40,7 +40,7 @@ The user is developing on a corporate-managed macOS machine today. Windows remai
 
 These rules override convenience and feature speed.
 
-- Do not expose `shell_run` or a generic arbitrary command executor.
+- Do not expose a raw shell-string executor. Structured command execution must use `executable + args[]`, workspace-relative cwd, bounded output, and central policy classification.
 - Do not expose filesystem delete tools.
 - Do not expose destructive Git operations such as reset/clean/force/discard through a generic Git tool.
 - Do not delete project files/directories without explicit user confirmation.
@@ -74,8 +74,8 @@ Behavior:
 
 - `READ_ONLY`: allowed automatically inside the existing workspace boundary.
 - `WRITE_REVERSIBLE`: allowed when the operation is narrow and recovery requirements are satisfied.
-- `PROCESS`: allowed only for detected/configured project commands, never arbitrary command text.
-- `CAPABILITY_GRANT`: requires Approve Once because it expands what local paths the agent may operate on. MCP `workspace_add` and `workspace_register` belong here.
+- `PROCESS`: allowed for structured executable invocations inside a project workspace; shell executables and system-sensitive intent require approval.
+- `CAPABILITY_GRANT`: requires Approve Once because it expands what local paths the agent may operate on. MCP `workspace_add`, `workspace_register`, and `workspace_create` belong here.
 - `DESTRUCTIVE`: requires Approve Once.
 - `SYSTEM_SENSITIVE`: requires Approve Once.
 
@@ -125,6 +125,8 @@ workspace_current
 workspace_info
 workspace_tree
 workspace_snapshot
+workspace_create
+workspace_refresh
 
 read_file
 read_many_files
@@ -136,6 +138,8 @@ search_files
 file_info
 write_file
 apply_patch
+directory_create
+command_run
 
 git_status
 git_diff
@@ -143,6 +147,10 @@ git_log
 git_show
 git_stage
 git_commit
+git_init
+git_add
+git_create_branch
+git_checkout
 
 project_test
 project_lint
@@ -153,6 +161,8 @@ project_dev
 process_list
 process_read
 process_stop
+process_start
+process_write
 
 operation_get
 ```
@@ -439,20 +449,25 @@ Implemented / remaining UX work:
 - Implemented: approval history is bounded to 200 records while preserving live pending approvals, and expired approvals transition during list/prune instead of disappearing silently.
 - Implemented: audit appends are serialized per directory, fsynced, and rotated to UUID-suffixed files so concurrent rotation cannot overwrite an earlier audit segment.
 - Implemented: Approve/Reject persistence is awaited, and approved async operations are awaited in the admin request path; action failures propagate to the caller after the operation record is persisted as `failed` instead of becoming an unhandled rejection.
+- Implemented: Activity now reads approvals, operations, and recovery from one bounded admin snapshot; serialized refreshes prevent stale overlapping responses, approval actions show immediate busy/error feedback, and activity panels no longer stretch to the height of the operations history.
+- Implemented: Approvals, Operations, Recovery, and Live log now use fixed-height panels with independent scrolling; the live log fills its card instead of stretching the page.
 
 ### Phase I — Process/session usability
-Status: **BOUNDED OUTPUT DONE IN SOURCE / INTERACTIVE INPUT DEFERRED**
+Status: **STRUCTURED COMMANDS AND MANAGED SESSIONS DONE IN SOURCE / LIVE ACTIVATION PENDING**
 
 Only after Safety Core is stable:
 
-- bounded interactive process/session primitives if genuinely needed.
+- bounded interactive process/session primitives with explicit managed process IDs.
 - explicit session IDs and bounded stdout/stderr pagination.
-- no generic shell.
-- preserve allowlisted/configured project-command semantics.
+- no raw shell string; command execution is structured argv only.
+- preserve workspace/cwd confinement and central policy classification.
 - Implemented: `process_read_output` reads at most 64 Ki characters per call from one retained stdout/stderr stream using logical offsets and defaults to a 16 Ki-character tail.
 - Implemented: logical total/start offsets survive ring-buffer rollover; requesting an output cursor older than retained data returns `PROCESS_OUTPUT_EXPIRED` rather than shifting silently.
 - Implemented: `process_list` returns at most 50 recent processes with only 2 Ki-character tails per stdout/stderr stream, and ProcessManager evicts only the oldest completed in-memory records above a 200-record retention ceiling while preserving all starting/running records.
-- Deferred: interactive stdin/session input remains out of scope until a concrete project-command use case requires it; no generic `process_start` or shell was added.
+- Implemented: `workspace_create` creates and registers a child project below a machine root only after capability approval; `workspace_refresh` re-detects current project metadata and configured commands.
+- Implemented: `command_run` accepts structured executable/args, confines cwd to a project workspace, filters security-sensitive environment overrides, bounds output, applies timeouts, and records the managed process operation.
+- Implemented: `process_start` and `process_write` expose only Agent Host-managed processes with explicit IDs, bounded stdin, and the same workspace/policy checks.
+- Implemented: `directory_create`, `git_init`, `git_add`, `git_create_branch`, and non-force `git_checkout` provide narrow typed development-loop mutations without a generic Git shell.
 
 ### Phase J — Context indexing, only if bounded primitives prove insufficient
 
@@ -482,8 +497,7 @@ Implementation remains deferred until an operator intentionally provisions the C
 
 Do not start these merely because they are technically possible:
 
-- raw shell / arbitrary command execution.
-- generic `process_start`.
+- raw shell-string / unvalidated shell command execution.
 - filesystem delete tool.
 - destructive/force Git commands.
 - browser automation.

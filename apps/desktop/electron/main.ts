@@ -598,6 +598,7 @@ function registerIpc(): void {
   ipcMain.handle("tunnel:stop", async () => stopTunnel());
   ipcMain.handle("agent:events", async () => fetchJson("/events"));
   ipcMain.handle("agent:restart", async () => restartAgentHost());
+  ipcMain.handle("agent:activity", async () => fetchJson("/admin/activity"));
   ipcMain.handle("agent:approvals", async () => fetchJson("/admin/approvals"));
   ipcMain.handle("agent:operations", async () => fetchJson("/admin/operations"));
   ipcMain.handle("agent:recovery", async () => fetchJson("/admin/recovery"));

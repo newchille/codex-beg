@@ -17,6 +17,9 @@ export class GitService {
   log(workspaceId: string, cwd: string) { return this.run(workspaceId, cwd, ["log", "--oneline", "-20"]); }
   show(workspaceId: string, cwd: string, ref = "HEAD") { if (!/^[A-Za-z0-9_./~-]+$/.test(ref)) throw new CodexBegError("INVALID_GIT_REF", "Invalid git ref."); return this.run(workspaceId, cwd, ["show", "--stat", ref]); }
   root(workspaceId: string, cwd: string) { return this.run(workspaceId, cwd, ["rev-parse", "--show-toplevel"]); }
+  init(workspaceId: string, cwd: string) { return this.run(workspaceId, cwd, ["init"]); }
   stage(workspaceId: string, cwd: string, paths: string[]) { return this.run(workspaceId, cwd, ["add", "--", ...paths]); }
   commit(workspaceId: string, cwd: string, message: string) { return this.run(workspaceId, cwd, ["commit", "-m", message]); }
+  createBranch(workspaceId: string, cwd: string, branchName: string) { return this.run(workspaceId, cwd, ["switch", "-c", branchName]); }
+  checkout(workspaceId: string, cwd: string, branchName: string) { return this.run(workspaceId, cwd, ["switch", branchName]); }
 }

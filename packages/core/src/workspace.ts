@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { JsonStore } from "./persistence.js";
 import { PathViolationError, CodexBegError } from "./errors.js";
@@ -21,7 +21,7 @@ function normalizeForCompare(path: string): string {
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-async function detectProject(root: string): Promise<{ type: ProjectType; commands: CommandConfig }> {
+export async function detectProject(root: string): Promise<{ type: ProjectType; commands: CommandConfig }> {
   const exists = async (name: string) => { try { await access(join(root, name)); return true; } catch { return false; } };
   const commands: CommandConfig = {};
   if (await exists("package.json")) {
@@ -50,6 +50,13 @@ async function detectProject(root: string): Promise<{ type: ProjectType; command
     commands.lint = { executable: "go", args: ["vet", "./..."] };
     commands.build = { executable: "go", args: ["build", "./..."] };
     return { type: PROJECT_TYPES.go, commands };
+  }
+  if (await exists("pyproject.toml")) {
+    const executable = process.platform === "win32" ? "python.exe" : "python3";
+    commands.test = { executable, args: ["-m", "pytest"] };
+    commands.lint = { executable, args: ["-m", "ruff", "check", "."] };
+    commands.typecheck = { executable, args: ["-m", "mypy", "."] };
+    return { type: PROJECT_TYPES.python, commands };
   }
   if (await exists("pom.xml") || await exists("mvnw") || await exists("mvnw.cmd")) {
     const executable = process.platform === "win32" && await exists("mvnw.cmd") ? "mvnw.cmd" : await exists("mvnw") ? "./mvnw" : "mvn";
@@ -129,6 +136,37 @@ export class WorkspaceManager {
       return existing;
     }
     return this.add(canonicalPath, displayName, WORKSPACE_KINDS.project, parentWorkspaceId);
+  }
+
+  async resolveChildPath(parentWorkspaceId: string, path: string): Promise<{ workspace: Workspace; absolute: string; relativePath: string }> {
+    const parent = this.require(parentWorkspaceId);
+    if (parent.kind !== WORKSPACE_KINDS.machineRoot) throw new CodexBegError("INVALID_WORKSPACE", "New child projects may only be created below a machine root.");
+    const resolved = await this.resolvePath(parentWorkspaceId, path, true);
+    if (resolved.relativePath === ".") throw new CodexBegError("INVALID_WORKSPACE", "Child project path must be below the parent workspace root.");
+    return resolved;
+  }
+
+  async createChild(parentWorkspaceId: string, path: string, displayName?: string): Promise<Workspace> {
+    const parentPath = await this.resolveChildPath(parentWorkspaceId, path);
+    await mkdir(parentPath.absolute, { recursive: true });
+    const canonicalPath = await realpath(parentPath.absolute);
+    if (!isInside(normalizeForCompare(parentPath.workspace.canonicalRoot), normalizeForCompare(canonicalPath))) throw new PathViolationError("Resolved child project escapes the parent workspace.");
+    return this.register(parentWorkspaceId, relative(parentPath.workspace.canonicalRoot, canonicalPath), displayName);
+  }
+
+  async refresh(id: string): Promise<Workspace> {
+    const workspace = this.require(id);
+    const info = await stat(workspace.canonicalRoot);
+    if (!info.isDirectory()) throw new CodexBegError("INVALID_WORKSPACE", "Workspace root must be a directory.");
+    const canonicalRoot = await realpath(workspace.canonicalRoot);
+    if (normalizeForCompare(canonicalRoot) !== normalizeForCompare(workspace.canonicalRoot)) throw new PathViolationError("Workspace root no longer resolves to its registered location.");
+    const detected = workspace.kind === WORKSPACE_KINDS.project ? await detectProject(canonicalRoot) : { type: PROJECT_TYPES.unknown, commands: {} };
+    workspace.projectType = detected.type;
+    workspace.commands = detected.commands;
+    workspace.updatedAt = new Date().toISOString();
+    await this.store.save(this.state);
+    this.events.emit("workspace.changed", { action: "refreshed", workspaceId: workspace.id });
+    return structuredClone(workspace);
   }
 
   async select(id: string): Promise<Workspace> {

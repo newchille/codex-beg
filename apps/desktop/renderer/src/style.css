@@ -113,12 +113,18 @@ button.small { padding: 6px 9px; font-size: 11px; }
 .empty-state { padding: 42px 20px; border: 1px dashed #d9dee7; border-radius: 12px; text-align: center; color: #98a2b3; display: grid; gap: 6px; }
 .empty-state strong { color: #475467; }
 
-.activity-grid { display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 16px; }
+.activity-grid { display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+.activity-panel { height: 420px; min-height: 0 !important; display: flex; flex-direction: column; overflow: hidden; }
+.activity-panel-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 4px; }
+.live-log-panel .activity-panel-body { overflow: hidden; padding-right: 0; }
+.activity-notice { margin-bottom: 16px; }
 .section-live { position: absolute; right: 24px; top: 26px; }
 .approval { margin-top: 14px; padding: 14px; border: 1px solid #f0dfb7; background: #fffdf7; border-radius: 11px; display: grid; gap: 7px; }
 .approval code { font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: #475467; overflow-wrap: anywhere; }
 .approval small { color: #8a94a6; }
 .simple-list { margin-top: 16px; display: grid; gap: 8px; }
+.activity-grid .simple-list { margin-top: 0; }
+.activity-panel .logs { height: 100%; max-height: none; min-height: 0; margin-top: 0; overflow: auto; }
 .simple-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; border-top: 1px solid #eef1f5; padding: 10px 0; }
 .simple-row strong { display: block; }
 .simple-row small { display: block; color: #98a2b3; margin-top: 3px; max-width: 460px; overflow-wrap: anywhere; }

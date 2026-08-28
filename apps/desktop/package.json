@@ -1,6 +1,6 @@
 {
   "name": "@codex-beg/desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "description": "Codex BEG local-first safety core desktop application",

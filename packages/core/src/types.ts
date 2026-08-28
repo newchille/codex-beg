@@ -7,6 +7,7 @@ export const PROJECT_TYPES = {
   gradle: "gradle",
   rust: "rust",
   go: "go",
+  python: "python",
   dotnet: "dotnet",
   unknown: "unknown",
 } as const;
@@ -80,6 +81,10 @@ export interface OperationRequest {
   kind: string;
   executable?: string;
   arguments?: string[];
+  cwd?: string;
+  environment?: Record<string, string>;
+  timeoutSeconds?: number;
+  initializeGit?: boolean;
   targets: OperationTarget[];
   createdAt: string;
 }
@@ -131,13 +136,27 @@ export interface ProcessSnapshot {
   workspaceId: string;
   executable: string;
   arguments: string[];
+  pid?: number;
   startedAt: string;
   state: "starting" | "running" | "exited" | "failed" | "stopped";
+  exitCode: number | null;
+  timedOut?: boolean;
+  stdout: string;
+  stderr: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+}
+
+export interface CommandRunResult {
+  commandId: string;
   exitCode: number | null;
   stdout: string;
   stderr: string;
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
+  timedOut: boolean;
+  startedAt: string;
+  finishedAt: string;
 }
 
 export interface ReadFileResult {
@@ -196,6 +215,15 @@ export const WorkspaceRegisterInput = z.object({
   path: z.string().min(1).max(4096),
   displayName: z.string().trim().min(1).max(120).optional(),
 });
+
+export const WorkspaceCreateInput = z.object({
+  parentWorkspaceId: z.string().uuid(),
+  path: z.string().min(1).max(4096),
+  displayName: z.string().trim().min(1).max(120).optional(),
+  initializeGit: z.boolean().default(false),
+});
+
+export const WorkspaceRefreshInput = z.object({ workspaceId: z.string().uuid() });
 
 export const RelativePathInput = z.object({
   workspaceId: z.string().uuid(),
@@ -263,6 +291,41 @@ export const ProjectCommandInput = z.object({
   timeoutSeconds: z.number().int().min(1).max(1800).optional(),
 });
 
+const environmentInput = z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128), z.string().max(8192)).superRefine((value, context) => {
+  const blocked = new Set(["PATH", "HOME", "SHELL", "PWD", "OLDPWD", "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "RUBYOPT", "PERL5OPT", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH"]);
+  if (Object.keys(value).length > 64) context.addIssue({ code: z.ZodIssueCode.custom, path: [], message: "Environment overrides exceed the 64-key limit." });
+  if (Object.entries(value).reduce((total, [key, item]) => total + Buffer.byteLength(key, "utf8") + Buffer.byteLength(item, "utf8"), 0) > 256 * 1024) context.addIssue({ code: z.ZodIssueCode.custom, path: [], message: "Environment overrides exceed the 256 KiB total limit." });
+  for (const key of Object.keys(value)) if (blocked.has(key.toUpperCase())) context.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} cannot be overridden.` });
+});
+
+const validateProcessInvocation = (value: { executable: string; cwd: string; args: string[] }, context: z.RefinementCtx): void => {
+  if (value.executable.includes("\0")) context.addIssue({ code: z.ZodIssueCode.custom, path: ["executable"], message: "Executable cannot contain NUL bytes." });
+  if (value.cwd.includes("\0")) context.addIssue({ code: z.ZodIssueCode.custom, path: ["cwd"], message: "cwd cannot contain NUL bytes." });
+  for (const [index, arg] of value.args.entries()) if (arg.includes("\0")) context.addIssue({ code: z.ZodIssueCode.custom, path: ["args", index], message: "Arguments cannot contain NUL bytes." });
+  const totalBytes = value.args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0);
+  if (totalBytes > 256 * 1024) context.addIssue({ code: z.ZodIssueCode.custom, path: ["args"], message: "Arguments exceed the 256 KiB total limit." });
+};
+
+export const CommandRunInput = z.object({
+  workspaceId: z.string().uuid(),
+  executable: z.string().trim().min(1).max(1024),
+  args: z.array(z.string().max(64 * 1024)).max(128).default([]),
+  cwd: z.string().min(1).max(4096).default("."),
+  env: environmentInput.optional(),
+  timeoutSeconds: z.number().int().min(1).max(1800).default(600),
+}).superRefine(validateProcessInvocation);
+
+export const ProcessStartInput = z.object({
+  workspaceId: z.string().uuid(),
+  executable: z.string().trim().min(1).max(1024),
+  args: z.array(z.string().max(64 * 1024)).max(128).default([]),
+  cwd: z.string().min(1).max(4096).default("."),
+  env: environmentInput.optional(),
+  timeoutSeconds: z.number().int().min(1).max(86_400).optional(),
+}).superRefine(validateProcessInvocation);
+
+export const ProcessWriteInput = z.object({ processId: z.string().uuid(), input: z.string().max(64 * 1024) });
+
 export const GitStageInput = z.object({
   workspaceId: z.string().uuid(),
   paths: z.array(z.string().min(1).max(4096)).min(1).max(100),
@@ -272,6 +335,15 @@ export const GitCommitInput = z.object({
   workspaceId: z.string().uuid(),
   message: z.string().trim().min(1).max(5000),
 });
+
+export const GitCreateBranchInput = z.object({
+  workspaceId: z.string().uuid(),
+  branchName: z.string().trim().min(1).max(255).regex(/^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]+(?<!\.)$/),
+});
+
+export const GitCheckoutInput = GitCreateBranchInput;
+
+export const DirectoryCreateInput = z.object({ workspaceId: z.string().uuid(), path: z.string().min(1).max(4096) });
 
 export const ProcessIdInput = z.object({ processId: z.string().uuid() });
 export const ProcessReadOutputInput = z.object({

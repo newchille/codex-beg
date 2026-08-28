@@ -33,6 +33,7 @@ interface CodexBegApi {
   tunnelStop: () => Promise<{ status: TunnelRuntimeStatus; error?: string }>;
   restartAgentHost: () => Promise<{ running: boolean; error?: string }>;
   events: () => Promise<unknown>;
+  activity: () => Promise<unknown>;
   approvals: () => Promise<unknown>;
   operations: () => Promise<unknown>;
   recovery: () => Promise<unknown>;

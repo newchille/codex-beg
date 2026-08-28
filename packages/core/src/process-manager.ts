@@ -45,11 +45,12 @@ export class ProcessManager {
   list(): ProcessSnapshot[] { return [...this.processes.values()].sort((left, right) => Date.parse(right.snapshot.startedAt) - Date.parse(left.snapshot.startedAt)).slice(0, PROCESS_LIST_LIMIT).map((item) => { const snapshot = structuredClone(item.snapshot); if (snapshot.stdout.length > PROCESS_LIST_OUTPUT_TAIL) { snapshot.stdout = snapshot.stdout.slice(-PROCESS_LIST_OUTPUT_TAIL); snapshot.stdoutTruncated = true; } if (snapshot.stderr.length > PROCESS_LIST_OUTPUT_TAIL) { snapshot.stderr = snapshot.stderr.slice(-PROCESS_LIST_OUTPUT_TAIL); snapshot.stderrTruncated = true; } return snapshot; }); }
   get(id: string): ProcessSnapshot { const value = this.processes.get(id); if (!value) throw new CodexBegError("PROCESS_NOT_FOUND", `Unknown process: ${id}`); return structuredClone(value.snapshot); }
 
-  start(workspaceId: string, cwd: string, executable: string, args: string[], timeoutSeconds: number, background: boolean): ProcessSnapshot {
+  start(workspaceId: string, cwd: string, executable: string, args: string[], timeoutSeconds: number, background: boolean, env?: NodeJS.ProcessEnv): ProcessSnapshot {
     const processId = randomUUID();
     const snapshot: ProcessSnapshot = { processId, workspaceId, executable, arguments: args, startedAt: new Date().toISOString(), state: "starting", exitCode: null, stdout: "", stderr: "", stdoutTruncated: false, stderrTruncated: false };
     const invocation = buildSpawnInvocation(executable, args);
-    const child = spawn(invocation.executable, invocation.args, { cwd, shell: false, windowsHide: true, detached: process.platform !== "win32" });
+    const child = spawn(invocation.executable, invocation.args, { cwd, env, shell: false, windowsHide: true, detached: process.platform !== "win32" });
+    if (child.pid !== undefined) snapshot.pid = child.pid;
     const managed: ManagedProcess = { snapshot, child, stdoutTotalChars: 0, stderrTotalChars: 0, stdoutStartOffset: 0, stderrStartOffset: 0 };
     this.processes.set(processId, managed);
     const append = (key: "stdout" | "stderr", chunk: Buffer) => {
@@ -67,9 +68,31 @@ export class ProcessManager {
     child.once("spawn", () => { snapshot.state = "running"; this.events.emit("process.started", { processId, workspaceId, executable, arguments: args }); });
     child.once("error", (error) => { snapshot.state = "failed"; snapshot.exitCode = -1; append("stderr", Buffer.from(error.message)); this.events.emit("process.exited", { processId, state: snapshot.state, exitCode: -1 }); });
     child.once("close", (code) => { snapshot.exitCode = code; if (snapshot.state !== "stopped" && snapshot.state !== "failed") snapshot.state = code === 0 ? "exited" : "failed"; this.events.emit("process.exited", { processId, state: snapshot.state, exitCode: code }); if (managed.timeout) clearTimeout(managed.timeout); this.pruneCompletedHistory(); });
-    if (timeoutSeconds > 0) managed.timeout = setTimeout(() => { void this.stop(processId); }, timeoutSeconds * 1000);
+    if (timeoutSeconds > 0) managed.timeout = setTimeout(() => { snapshot.timedOut = true; void this.stop(processId); }, timeoutSeconds * 1000);
     if (!background) return snapshot;
     return snapshot;
+  }
+
+  async waitForStart(id: string): Promise<ProcessSnapshot> {
+    const value = this.processes.get(id);
+    if (!value) throw new CodexBegError("PROCESS_NOT_FOUND", `Unknown process: ${id}`);
+    if (value.snapshot.state !== "starting") return structuredClone(value.snapshot);
+    await new Promise<void>((resolveStarted) => {
+      let settled = false;
+      const finish = () => { if (settled) return; settled = true; value.child.removeListener("spawn", finish); value.child.removeListener("error", finish); resolveStarted(); };
+      value.child.once("spawn", finish);
+      value.child.once("error", finish);
+      if (value.snapshot.state !== "starting") finish();
+    });
+    return structuredClone(value.snapshot);
+  }
+
+  write(id: string, input: string): { processId: string; bytesWritten: number; state: ProcessSnapshot["state"] } {
+    const value = this.processes.get(id);
+    if (!value) throw new CodexBegError("PROCESS_NOT_FOUND", `Unknown process: ${id}`);
+    if (["exited", "failed", "stopped"].includes(value.snapshot.state) || !value.child.stdin.writable) throw new CodexBegError("PROCESS_NOT_WRITABLE", "The managed process is no longer accepting stdin.");
+    value.child.stdin.write(input);
+    return { processId: id, bytesWritten: Buffer.byteLength(input, "utf8"), state: value.snapshot.state };
   }
 
   readOutput(id: string, stream: "stdout" | "stderr", offset?: number, maxChars = 16 * 1024) { const value = this.processes.get(id); if (!value) throw new CodexBegError("PROCESS_NOT_FOUND", `Unknown process: ${id}`); const max = Math.min(Math.max(maxChars, 1), 64 * 1024); const totalChars = stream === "stdout" ? value.stdoutTotalChars : value.stderrTotalChars; const retainedStartOffset = stream === "stdout" ? value.stdoutStartOffset : value.stderrStartOffset; const requestedOffset = offset ?? Math.max(retainedStartOffset, totalChars - max); if (requestedOffset < retainedStartOffset) throw new CodexBegError("PROCESS_OUTPUT_EXPIRED", `Requested ${stream} output is no longer retained.`); if (requestedOffset > totalChars) throw new CodexBegError("PROCESS_OUTPUT_OFFSET", `Requested ${stream} offset is beyond current output.`); const content = value.snapshot[stream].slice(requestedOffset - retainedStartOffset, requestedOffset - retainedStartOffset + max); const nextOffset = requestedOffset + content.length; return { processId: id, stream, content, offset: requestedOffset, charsReturned: content.length, totalChars, retainedStartOffset, truncatedBefore: retainedStartOffset > 0, hasMore: nextOffset < totalChars, nextOffset, state: value.snapshot.state }; }
@@ -86,7 +109,13 @@ export class ProcessManager {
     value.snapshot.state = "stopped";
     if (process.platform === "win32") value.child.kill();
     else { try { process.kill(-value.child.pid!, "SIGTERM"); } catch { value.child.kill("SIGTERM"); } }
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await new Promise<void>((resolveExit) => {
+      let settled = false;
+      const finish = () => { if (settled) return; settled = true; clearTimeout(timer); value.child.removeListener("close", finish); resolveExit(); };
+      const timer = setTimeout(finish, 5000);
+      value.child.once("close", finish);
+      if (value.snapshot.exitCode !== null || value.child.exitCode !== null) finish();
+    });
     if (value.snapshot.exitCode === null) {
       if (process.platform === "win32" && value.child.pid) {
         const treeKiller = spawn("taskkill.exe", ["/PID", String(value.child.pid), "/T", "/F"], { windowsHide: true, shell: false, stdio: "ignore" });

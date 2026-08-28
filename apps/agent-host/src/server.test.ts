@@ -22,16 +22,16 @@ describe("Codex BEG MCP contract", () => {
     const runtime = new AgentRuntime(dataDirectory);
     await runtime.init();
     const server = createMcpServer(runtime);
-    const client = new Client({ name: "codex-beg-test", version: "0.1.4" }, { capabilities: {} });
+    const client = new Client({ name: "codex-beg-test", version: "0.1.5" }, { capabilities: {} });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const listed = await client.listTools();
     expect(listed.tools).toHaveLength(TOOL_NAMES.length);
-    expect(AGENT_HOST_VERSION).toBe("0.1.4");
+    expect(AGENT_HOST_VERSION).toBe("0.1.5");
     expect(TOOL_CATALOG_HASH).toMatch(/^[a-f0-9]{16}$/);
     const toolNames = listed.tools.map((item) => item.name);
-    for (const name of ["workspace_list", "workspace_add", "workspace_register", "workspace_select", "workspace_current", "workspace_info", "workspace_tree", "workspace_snapshot", "read_many_files", "list_directory_page", "search_text_page", "search_files", "git_diff_check", "git_stage", "git_commit", "process_read_output"]) expect(toolNames).toContain(name);
+    for (const name of ["workspace_list", "workspace_add", "workspace_register", "workspace_create", "workspace_refresh", "workspace_select", "workspace_current", "workspace_info", "workspace_tree", "workspace_snapshot", "read_many_files", "list_directory_page", "search_text_page", "search_files", "directory_create", "command_run", "git_diff_check", "git_init", "git_add", "git_stage", "git_create_branch", "git_checkout", "git_commit", "process_read_output", "process_start", "process_write"]) expect(toolNames).toContain(name);
     expect(listed.tools.map((item) => item.name)).toContain("workspace_snapshot");
     expect(listed.tools.map((item) => item.name)).not.toContain("shell_run");
     const invalid = await client.callTool({ name: "workspace_info", arguments: { workspaceId: "not-a-uuid" } });
@@ -45,7 +45,10 @@ describe("Codex BEG MCP contract", () => {
     expect(workspaceApproval.exactOperation).toContain(workspaceRoot);
     expect(workspaceApproval.risk).toContain("expands");
     expect(workspaceApproval.classification).toBe("CAPABILITY_GRANT");
-    await runtime.addWorkspace(workspaceRoot);
+    const workspace = await runtime.addWorkspace(workspaceRoot);
+    const command = await client.callTool({ name: "command_run", arguments: { workspaceId: workspace.id, executable: "node", args: ["-e", "process.stdout.write('mcp-command')"] } });
+    expect(command.isError).not.toBe(true);
+    expect(firstText(command)).toContain("mcp-command");
     const machineRootPath = await mkdtemp(join(tmpdir(), "codex-beg-host-machine-root-"));
     await mkdir(join(machineRootPath, "child-project"));
     await writeFile(join(machineRootPath, "child-project", "package.json"), JSON.stringify({ scripts: {} }));
@@ -90,6 +93,7 @@ describe("Codex BEG MCP contract", () => {
       expect((await fetch(`${base}/admin/state`)).status).toBe(401);
       expect((await fetch(`${base}/admin/operations`)).status).toBe(401);
       expect((await fetch(`${base}/admin/recovery`)).status).toBe(401);
+      expect((await fetch(`${base}/admin/activity`)).status).toBe(401);
       expect((await fetch(`${base}/events`)).status).toBe(401);
       expect((await fetch(`${base}/admin/state`, { headers: { "x-codex-beg-admin-token": "wrong" } })).status).toBe(401);
       const authenticated = await fetch(`${base}/admin/state`, { headers: { "x-codex-beg-admin-token": token } });
@@ -98,6 +102,15 @@ describe("Codex BEG MCP contract", () => {
       const adminHeaders = { "x-codex-beg-admin-token": token };
       expect(await (await fetch(`${base}/admin/operations`, { headers: adminHeaders })).json()).toEqual([]);
       expect(await (await fetch(`${base}/admin/recovery`, { headers: adminHeaders })).json()).toEqual([]);
+      expect(await (await fetch(`${base}/admin/activity`, { headers: adminHeaders })).json()).toEqual({ approvals: [], operations: [], recovery: [] });
+
+      const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-beg-host-activity-workspace-"));
+      await expect(runtime.addWorkspaceFromMcp({ rootPath: workspaceRoot })).rejects.toMatchObject({ code: "APPROVAL_REQUIRED" });
+      const activity = await (await fetch(`${base}/admin/activity`, { headers: adminHeaders })).json() as { approvals: Array<{ status: string; approvalId: string }>; operations: Array<{ status: string; approvalId?: string }> };
+      expect(activity.approvals).toHaveLength(1);
+      expect(activity.approvals[0]).toMatchObject({ status: "pending" });
+      expect(activity.operations).toHaveLength(1);
+      expect(activity.operations[0]).toMatchObject({ status: "approval_required", approvalId: activity.approvals[0]!.approvalId });
     } finally {
       await new Promise<void>((resolveClose) => http.close(() => resolveClose()));
       await runtime.shutdown();

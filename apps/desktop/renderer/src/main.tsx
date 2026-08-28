@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 
@@ -378,32 +378,65 @@ function WorkspaceRow({ workspace, current, child = false, onSelect, onRemove }:
 }
 
 type ApprovalView = { approvalId: string; action: string; classification: string; exactOperation: string; risk: string; expiresAt: string; status: string };
-type OperationView = { operationId: string; kind: string; status: string; workspaceId: string; updatedAt: string; error?: string };
+type OperationView = { operationId: string; kind: string; status: string; workspaceId: string; updatedAt: string; approvalId?: string; error?: string };
 type RecoveryView = { operationId: string; workspaceId: string; createdAt: string; status: string; changes: Array<{ path: string; existed: boolean }> };
+type ActivitySnapshot = { approvals: unknown; operations: unknown; recovery: unknown };
 
 function Activity({ logs }: { logs: string[] }): React.JSX.Element {
   const [approvals, setApprovals] = useState<ApprovalView[]>([]);
   const [operations, setOperations] = useState<OperationView[]>([]);
   const [recovery, setRecovery] = useState<RecoveryView[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
+  const refreshInFlight = useRef<Promise<void> | null>(null);
   const refresh = useCallback(async (): Promise<void> => {
-    const [approvalValue, operationValue, recoveryValue] = await Promise.all([window.codexBeg.approvals(), window.codexBeg.operations(), window.codexBeg.recovery()]);
-    setApprovals(Array.isArray(approvalValue) ? approvalValue as ApprovalView[] : []);
-    setOperations(Array.isArray(operationValue) ? operationValue as OperationView[] : []);
-    setRecovery(Array.isArray(recoveryValue) ? recoveryValue as RecoveryView[] : []);
+    if (refreshInFlight.current) return refreshInFlight.current;
+    const task = (async () => {
+      try {
+        const value = await window.codexBeg.activity();
+        if (isError(value)) { setNotice(value.error); return; }
+        if (!isRecord(value) || !("approvals" in value) || !("operations" in value) || !("recovery" in value)) { setNotice("Activity data is unavailable."); return; }
+        const snapshot = value as ActivitySnapshot;
+        setApprovals(Array.isArray(snapshot.approvals) ? snapshot.approvals as ApprovalView[] : []);
+        setOperations(Array.isArray(snapshot.operations) ? snapshot.operations as OperationView[] : []);
+        setRecovery(Array.isArray(snapshot.recovery) ? snapshot.recovery as RecoveryView[] : []);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
+      }
+    })();
+    refreshInFlight.current = task;
+    try { await task; } finally { if (refreshInFlight.current === task) refreshInFlight.current = null; }
   }, []);
-  useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 1_000); return () => window.clearInterval(timer); }, [refresh]);
+  useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 250); return () => window.clearInterval(timer); }, [refresh]);
   const restore = async (operationId: string): Promise<void> => { const value = await window.codexBeg.restore(operationId); setNotice(isError(value) ? value.error : `Restore completed for ${operationId}.`); await refresh(); };
+  const decide = async (approvalId: string, action: "approve" | "reject"): Promise<void> => {
+    setBusyApprovalId(approvalId);
+    try {
+      const value = action === "approve" ? await window.codexBeg.approve(approvalId) : await window.codexBeg.reject(approvalId);
+      if (isError(value)) setNotice(value.error);
+      else if (isRecord(value) && value.status === "cancelled") setNotice("Approval cancelled.");
+      else setNotice(action === "approve" ? "Approval submitted." : "Approval rejected.");
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyApprovalId(null);
+    }
+  };
   const pending = approvals.filter((item) => item.status === "pending");
   const recentOperations = [...operations].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, 20);
   const recentRecovery = [...recovery].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 12);
+  const waitingOperations = recentOperations.filter((item) => item.status === "approval_required");
 
-  return <section className="activity-grid">
-    <Panel title="Approvals"><div className="section-live"><i className="mini-dot ok"/>Live</div>{pending.length === 0 && <p className="muted">Nothing waiting for approval.</p>}{pending.map((item) => <div className="approval" key={item.approvalId}><strong>{item.action}</strong><code>{item.exactOperation}</code><small>{item.classification} · {item.risk}</small><div className="button-row compact"><button className="primary" onClick={() => void window.codexBeg.approve(item.approvalId).then(refresh)}>Approve once</button><button className="secondary" onClick={() => void window.codexBeg.reject(item.approvalId).then(refresh)}>Reject</button></div></div>)}</Panel>
-    <Panel title="Operations"><div className="simple-list">{recentOperations.map((item) => <div className="simple-row" key={item.operationId}><div><strong>{item.kind}</strong><small>{item.error ?? item.operationId}</small></div><StatusBadge tone={operationTone(item.status)} label={item.status}/></div>)}{recentOperations.length === 0 && <p className="muted">No operations yet.</p>}</div></Panel>
-    <Panel title="Recovery">{notice && <p className="inline-warning">{notice}</p>}<div className="simple-list">{recentRecovery.map((item) => <div className="simple-row" key={item.operationId}><div><strong>{item.changes.map((change) => change.path).join(", ")}</strong><small>{item.operationId}</small></div><div className="row-actions"><span>{item.status}</span>{["applied", "restore_conflict"].includes(item.status) && <button className="secondary small" onClick={() => void restore(item.operationId)}>Restore</button>}</div></div>)}{recentRecovery.length === 0 && <p className="muted">No recovery points.</p>}</div></Panel>
-    <Panel title="Live log"><pre className="logs">{logs.length ? logs.join("\n") : "Waiting for activity…"}</pre></Panel>
-  </section>;
+  return <>
+    {notice && <p className="inline-warning activity-notice" role="status">{notice}</p>}
+    <section className="activity-grid">
+    <ActivityPanel title="Approvals"><div className="section-live"><i className="mini-dot ok"/>Live</div>{pending.length === 0 && waitingOperations.length > 0 && <p className="inline-warning" role="alert">An approval-required operation is waiting while its approval details sync.</p>}{pending.length === 0 && waitingOperations.length === 0 && <p className="muted">Nothing waiting for approval.</p>}{pending.map((item) => <div className="approval" key={item.approvalId}><strong>{item.action}</strong><code>{item.exactOperation}</code><small>{item.classification} · {item.risk}</small><div className="button-row compact"><button className="primary" disabled={busyApprovalId !== null} onClick={() => void decide(item.approvalId, "approve")}>{busyApprovalId === item.approvalId ? "Approving…" : "Approve once"}</button><button className="secondary" disabled={busyApprovalId !== null} onClick={() => void decide(item.approvalId, "reject")}>{busyApprovalId === item.approvalId ? "Rejecting…" : "Reject"}</button></div></div>)}</ActivityPanel>
+    <ActivityPanel title="Operations"><div className="simple-list">{recentOperations.map((item) => <div className="simple-row" key={item.operationId}><div><strong>{item.kind}</strong><small>{item.error ?? item.operationId}</small></div><StatusBadge tone={operationTone(item.status)} label={item.status}/></div>)}{recentOperations.length === 0 && <p className="muted">No operations yet.</p>}</div></ActivityPanel>
+    <ActivityPanel title="Recovery"><div className="simple-list">{recentRecovery.map((item) => <div className="simple-row" key={item.operationId}><div><strong>{item.changes.map((change) => change.path).join(", ")}</strong><small>{item.operationId}</small></div><div className="row-actions"><span>{item.status}</span>{["applied", "restore_conflict"].includes(item.status) && <button className="secondary small" onClick={() => void restore(item.operationId)}>Restore</button>}</div></div>)}{recentRecovery.length === 0 && <p className="muted">No recovery points.</p>}</div></ActivityPanel>
+    <ActivityPanel title="Live log" className="live-log-panel"><pre className="logs">{logs.length ? logs.join("\n") : "Waiting for activity…"}</pre></ActivityPanel>
+    </section>
+  </>;
 }
 
 function Diagnostics({ doctor, setDoctor, setLogs }: { doctor: Record<string, unknown> | null; setDoctor: (value: Record<string, unknown>) => void; setLogs: React.Dispatch<React.SetStateAction<string[]>> }): React.JSX.Element {
@@ -419,6 +452,7 @@ function StatusBadge({ label, tone }: { label: string; tone: StatusTone }): Reac
 function SystemRow({ label, value, tone }: { label: string; value: string; tone: StatusTone }): React.JSX.Element { return <div className="system-row"><span>{label}</span><StatusBadge label={value} tone={tone}/></div>; }
 function EmptyState({ title, body }: { title: string; body: string }): React.JSX.Element { return <div className="empty-state"><strong>{title}</strong><span>{body}</span></div>; }
 function Panel({ title, children }: { title: string; children: React.ReactNode }): React.JSX.Element { return <section className="panel"><h2>{title}</h2>{children}</section>; }
+function ActivityPanel({ title, className = "", children }: { title: string; className?: string; children: React.ReactNode }): React.JSX.Element { return <section className={`panel activity-panel ${className}`.trim()}><h2>{title}</h2><div className="activity-panel-body">{children}</div></section>; }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function isError(value: unknown): value is { error: string } { return typeof value === "object" && value !== null && "error" in value && typeof value.error === "string"; }
