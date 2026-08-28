@@ -15,6 +15,7 @@ import {
   updateTrayMenuItems,
   type TrayMenuState,
 } from "./tray-menu.js";
+import { isAgentHostPortConflict } from "./agent-host-lifecycle.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 let mainWindow: BrowserWindow | null = null;
@@ -29,6 +30,7 @@ let tunnelAutoStartRunning = false;
 let tunnelAutoStartTask: Promise<void> | undefined;
 let agentHost: ChildProcess | null = null;
 let restartAttempts = 0;
+let agentHostPortConflict = false;
 let stopping = false;
 let restartTimer: NodeJS.Timeout | undefined;
 let tunnelMonitorTimer: NodeJS.Timeout | undefined;
@@ -38,6 +40,15 @@ const adminToken = randomBytes(32).toString("hex");
 const TUNNEL_ALIAS = "codex-beg";
 const TUNNEL_ID_PATTERN = /^tunnel_[0-9a-f]{32}$/;
 const TRAY_ICON_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAACQAAAAkCAYAAADhAJiYAAAAAXNSR0IArs4c6QAAADhlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAAqACAAQAAAABAAAAJKADAAQAAAABAAAAJAAAAAAJxsHGAAAAoklEQVRYCe3SIQ7AIBQD0A8Z4VokCC7KIbgNigNgMIhtmWtSz0RxrfnNC+5+n/3oXWstq7Va791KKZZSOjrPjzEshGBzzm/U0TXvcbf3vltr5r23nLPFGI9ucn/7Q/4oBzmuQQQFKgkBBwkSIihQSQg4SJAQQYFKQsBBgoQIClQSAg4SJERQoJIQcJAgIYIClYSAgwQJERSoJAQcJEiIoED1AEo1IGrHC658AAAAAElFTkSuQmCC";
+
+const isPrimaryInstance = app.requestSingleInstanceLock();
+if (!isPrimaryInstance) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    showMainWindow();
+  });
+}
 interface TunnelRuntimeStatus {
   alias: string;
   installed: boolean;
@@ -493,6 +504,7 @@ function startAgentHost(): void {
   if (quitting || stopping || agentHost) return;
   const script = hostScript();
   if (!existsSync(script)) return;
+  agentHostPortConflict = false;
   agentHost = spawn(process.execPath, [script], {
     cwd: resolve(here, "../.."),
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", CODEX_BEG_DATA_DIR: app.getPath("userData"), CODEX_BEG_MCP_PORT: "43123", CODEX_BEG_ADMIN_TOKEN_STDIN: "1" },
@@ -501,11 +513,31 @@ function startAgentHost(): void {
   });
   agentHost.stdin?.end(adminToken);
   agentHost.stdout?.on("data", (chunk: Buffer) => emitLog(chunk.toString("utf8").trimEnd()));
-  agentHost.stderr?.on("data", (chunk: Buffer) => emitLog(chunk.toString("utf8").trimEnd()));
+  agentHost.stderr?.on("data", (chunk: Buffer) => {
+    const message = chunk.toString("utf8").trimEnd();
+    if (!message) return;
+    if (isAgentHostPortConflict(message)) {
+      const firstConflict = !agentHostPortConflict;
+      agentHostPortConflict = true;
+      if (firstConflict) emitLog("Agent Host could not start because 127.0.0.1:43123 is already in use. Quit the other Codex BEG instance, then restart Agent Host.");
+      return;
+    }
+    emitLog(message);
+  });
+  agentHost.on("error", (error) => {
+    const message = error.message;
+    if (isAgentHostPortConflict(message)) {
+      const firstConflict = !agentHostPortConflict;
+      agentHostPortConflict = true;
+      if (firstConflict) emitLog("Agent Host could not start because 127.0.0.1:43123 is already in use. Quit the other Codex BEG instance, then restart Agent Host.");
+      return;
+    }
+    emitLog(`Agent Host process error: ${message}`);
+  });
   agentHost.on("exit", () => {
     agentHost = null;
     mainWindow?.webContents.send("agent:status", { running: false });
-    if (!stopping && restartAttempts < 3) {
+    if (!stopping && !agentHostPortConflict && restartAttempts < 3) {
       const delay = 500 * (2 ** restartAttempts);
       restartAttempts += 1;
       restartTimer = setTimeout(() => { restartTimer = undefined; startAgentHost(); }, delay);
@@ -588,7 +620,7 @@ function registerIpc(): void {
   ipcMain.handle("agent:status", async () => {
     const [health, tunnel] = await Promise.all([fetchJson("/healthz"), tunnelRuntimeStatus()]);
     updateTrayMenu(tunnel);
-    return { running: Boolean(agentHost), health, tunnel, checkedAt: new Date().toISOString() };
+    return { version: app.getVersion(), running: Boolean(agentHost), health, tunnel, checkedAt: new Date().toISOString() };
   });
   ipcMain.handle("tunnel:status", async () => tunnelRuntimeStatus(true));
   ipcMain.handle("tunnel:config", async () => tunnelConfigView());
@@ -701,6 +733,7 @@ function installApplicationMenu(): void {
 }
 
 app.whenReady().then(async () => {
+  if (!isPrimaryInstance) return;
   installApplicationMenu();
   registerIpc();
   startAgentHost();
@@ -723,6 +756,7 @@ app.whenReady().then(async () => {
 });
 app.on("window-all-closed", () => {});
 app.on("before-quit", (event) => {
+  if (!isPrimaryInstance) return;
   if (quitting) return;
   event.preventDefault();
   quitting = true;

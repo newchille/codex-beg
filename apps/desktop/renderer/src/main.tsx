@@ -47,6 +47,7 @@ interface WorkspaceState {
 }
 
 interface Status {
+  version: string;
   running: boolean;
   health: unknown;
   tunnel: TunnelRuntimeStatus;
@@ -64,6 +65,7 @@ const initialTunnel: TunnelRuntimeStatus = {
 };
 
 const initialStatus: Status = {
+  version: "—",
   running: false,
   health: null,
   tunnel: initialTunnel,
@@ -207,7 +209,7 @@ function App(): React.JSX.Element {
     <aside className="sidebar">
       <button className="brand" onClick={() => setPage("Overview")} aria-label="Codex BEG overview">
         <LogoMark />
-        <div><strong>Codex BEG</strong><small>Local workspace agent</small></div>
+        <div><strong>Codex BEG</strong><small>Local workspace agent</small><span className="app-version">v{status.version}</span></div>
       </button>
       <nav>{pages.map((item) => <button className={page === item ? "nav active" : "nav"} key={item} onClick={() => setPage(item)}>{item}</button>)}</nav>
       <div className="sidebar-footer"><span className="mini-dot ok" />Protected mode<small>Writes are reversible · destructive actions ask first</small></div>

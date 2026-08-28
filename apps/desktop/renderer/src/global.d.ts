@@ -24,7 +24,7 @@ interface TunnelConfigView {
 }
 
 interface CodexBegApi {
-  status: () => Promise<{ running: boolean; health: unknown; tunnel: TunnelRuntimeStatus; checkedAt: string }>;
+  status: () => Promise<{ version: string; running: boolean; health: unknown; tunnel: TunnelRuntimeStatus; checkedAt: string }>;
   tunnelStatus: () => Promise<TunnelRuntimeStatus>;
   tunnelConfig: () => Promise<TunnelConfigView>;
   tunnelSaveConfig: (input: { tunnelId: string; apiKey: string }) => Promise<TunnelConfigView>;

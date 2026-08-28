@@ -16,6 +16,7 @@ button { -webkit-app-region: no-drag; }
 .logo-mark { width: 38px; height: 38px; flex: 0 0 auto; filter: drop-shadow(0 5px 12px rgba(37,99,235,.2)); }
 .brand strong { display: block; font-size: 15px; letter-spacing: .02em; }
 .brand small { display: block; color: #8b95a8; margin-top: 2px; font-size: 11px; }
+.app-version { display: block; color: #98a2b3; margin-top: 3px; font-size: 10px; font-variant-numeric: tabular-nums; }
 nav { display: grid; gap: 4px; }
 .nav { border: 0; border-radius: 10px; padding: 11px 13px; text-align: left; color: #667085; background: transparent; cursor: pointer; transition: background .15s ease, color .15s ease, transform .15s ease; }
 .nav:hover { background: #f4f7fb; color: #344054; }
